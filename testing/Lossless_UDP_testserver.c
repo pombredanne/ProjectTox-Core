@@ -1,12 +1,12 @@
 /* Lossless_UDP testserver
- * A program that waits for a lossless UDP connection and then saves all the data recieved to a file.
+ * A program that waits for a lossless UDP connection and then saves all the data received to a file.
  * NOTE: this program simulates a 33% packet loss.
- * 
+ *
  * Best used in combination with Lossless_UDP_testclient
- * 
- * Compile with: gcc -O2 -Wall -o testserver ../core/network.c ../core/Lossless_UDP.c Lossless_UDP_testserver.c
- * 
- * Command line argument is the name of the file to save what we recieve to.
+ *
+ * Compile with: gcc -O2 -Wall -lsodium -o testserver ../core/network.c ../core/Lossless_UDP.c Lossless_UDP_testserver.c
+ *
+ * Command line argument is the name of the file to save what we receive to.
  * EX: ./testserver filename1.txt
  *
  *  Copyright (C) 2013 Tox project All Rights Reserved.
@@ -25,14 +25,19 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with Tox.  If not, see <http://www.gnu.org/licenses/>.
- *  
+ *
  */
 
-#include "../core/network.h"
-#include "../core/Lossless_UDP.h"
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include "../toxcore/network.h"
+#include "../toxcore/Lossless_UDP.h"
+#include "misc_tools.c"
 
 //Sleep function (x = milliseconds)
-#ifdef WIN32
+#if defined(_WIN32) || defined(__WIN32__) || defined (WIN32)
 
 #define c_sleep(x) Sleep(1*x)
 
@@ -50,11 +55,14 @@ void printpacket(uint8_t *data, uint32_t length, IP_Port ip_port)
     uint32_t i;
     printf("UNHANDLED PACKET RECEIVED\nLENGTH:%u\nCONTENTS:\n", length);
     printf("--------------------BEGIN-----------------------------\n");
+
     for (i = 0; i < length; i++) {
-        if(data[i] < 16)
+        if (data[i] < 16)
             printf("0");
-        printf("%hhX",data[i]);
+
+        printf("%hhX", data[i]);
     }
+
     printf("\n--------------------END-----------------------------\n\n\n");
 }
 
@@ -77,9 +85,9 @@ void printconnection(int connection_id)
     printf("--------------------BEGIN---------------------\n");
     IP_Port ip_port = connections[connection_id].ip_port;
     printf("IP: %u.%u.%u.%u Port: %u\n",ip_port.ip.c[0],ip_port.ip.c[1],ip_port.ip.c[2],ip_port.ip.c[3],ntohs(ip_port.port));
-    printf("status: %u, inbound: %u, SYNC_rate: %u\n", connections[connection_id].status, 
+    printf("status: %u, inbound: %u, SYNC_rate: %u\n", connections[connection_id].status,
     connections[connection_id].inbound, connections[connection_id].SYNC_rate);
-    printf("data rate: %u, last sync: %llu, last sent: %llu, last recv: %llu \n", connections[connection_id].data_rate, 
+    printf("data rate: %u, last sync: %llu, last sent: %llu, last recv: %llu \n", connections[connection_id].data_rate,
     connections[connection_id].last_SYNC, connections[connection_id].last_sent, connections[connection_id].last_recv);
     int i;
     for(i =0; i < MAX_QUEUE_NUM; i++)
@@ -94,12 +102,12 @@ void printconnection(int connection_id)
     }
     Data sendbuffer[MAX_QUEUE_NUM];
     Data recvbuffer[MAX_QUEUE_NUM];
-    printf("recv_num: %u, orecv_num: %u, sent_packetnum %u, osent_packetnum: %u, successful_sent: %u, successful_read: %u\n", 
-    connections[connection_id].recv_packetnum, 
+    printf("recv_num: %u, orecv_num: %u, sent_packetnum %u, osent_packetnum: %u, successful_sent: %u, successful_read: %u\n",
+    connections[connection_id].recv_packetnum,
     connections[connection_id].orecv_packetnum, connections[connection_id].sent_packetnum, connections[connection_id].osent_packetnum,
     connections[connection_id].successful_sent,
     connections[connection_id].successful_read);
-    
+
     printf("req packets: \n");
     for(i = 0; i < BUFFER_PACKET_NUM; i++)
     {
@@ -109,93 +117,120 @@ void printconnection(int connection_id)
     connections[connection_id].recv_counter, connections[connection_id].send_counter);
 
     printf("--------------------END---------------------\n");
-    
+
 }
 */
 
-/* recieve packets and send them to the packethandler
+/* receive packets and send them to the packethandler
  * run doLossless_UDP(); */
-void Lossless_UDP()
-{
-    IP_Port ip_port;
-    uint8_t data[MAX_UDP_PACKET_SIZE];
-    uint32_t length;
-    while (receivepacket(&ip_port, data, &length) != -1) {
-        //if(rand() % 3 != 1)//add packet loss
-        //{
-            if (LosslessUDP_handlepacket(data, length, ip_port)) {
-                    printpacket(data, length, ip_port);
-            } else {
-                //printconnection(0);
-                 printf("Received handled packet with length: %u\n", length);
-            }
-        //}
-    }
-    
-    doLossless_UDP();   
-}
+//void Lossless_UDP()
+//{
+//    IP_Port ip_port;
+//    uint8_t data[MAX_UDP_PACKET_SIZE];
+//    uint32_t length;
+//    while (receivepacket(&ip_port, data, &length) != -1) {
+//if(rand() % 3 != 1)//add packet loss
+//{
+//            if (LosslessUDP_handlepacket(data, length, ip_port)) {
+//                    printpacket(data, length, ip_port);
+//            } else {
+//printconnection(0);
+//                 printf("Received handled packet with length: %u\n", length);
+//            }
+//}
+//    }
+
+// networking_poll();
+
+//doLossless_UDP();
+//}
 
 
 int main(int argc, char *argv[])
 {
-    if (argc < 2) {
-        printf("usage: %s filename\n", argv[0]);
+    /* let user override default by cmdline */
+    uint8_t ipv6enabled = TOX_ENABLE_IPV6_DEFAULT; /* x */
+    int argvoffset = cmdline_parsefor_ipv46(argc, argv, &ipv6enabled);
+
+    if (argvoffset < 0)
+        exit(1);
+
+    if (argc < argvoffset + 2) {
+        printf("Usage: %s [--ipv4|--ipv6] filename\n", argv[0]);
         exit(0);
     }
-    
-    uint8_t buffer[512];
+
+    uint8_t buffer[MAX_DATA_SIZE];
     int read;
-    
-    FILE *file = fopen(argv[1], "wb");
-    if (file == NULL)
-      return 1;
-    
-    
+
+    FILE *file = fopen(argv[argvoffset + 1], "wb");
+
+    if (file == NULL) {
+        printf("Failed to open file \"%s\".\n", argv[argvoffset + 1]);
+        return 1;
+    }
+
+
     //initialize networking
     //bind to ip 0.0.0.0:PORT
     IP ip;
-    ip.i = 0;
-    init_networking(ip, PORT);
+    ip_init(&ip, ipv6enabled);
+
+    Lossless_UDP *ludp = new_lossless_udp(new_networking(ip, PORT));
     perror("Initialization");
-    
+
     int connection;
     uint64_t timer = current_time();
-    
-    
+
     while (1) {
-        Lossless_UDP();
-        connection = incoming_connection();
-        if(connection != -1) {
-            if(is_connected(connection) == 2) {
-                printf("Recieved the connection.\n");
-                
+        networking_poll(ludp->net);
+        do_lossless_udp(ludp);
+        connection = incoming_connection(ludp, 0);
+
+        if (connection != -1) {
+            if (is_connected(ludp, connection) == LUDP_NOT_CONFIRMED) {
+                printf("Received the connection.\n");
+
             }
+
             break;
         }
+
         c_sleep(1);
     }
-    
+
     timer = current_time();
-    
+
     while (1) {
         //printconnection(0);
-        Lossless_UDP();
-        if (is_connected(connection) >= 2) {
-            kill_connection_in(connection, 3000000);
-            read = read_packet(connection, buffer);
-            if (read != 0) {
-               // printf("Recieved data.\n");
-                if (!fwrite(buffer, read, 1, file)) 
+        networking_poll(ludp->net);
+
+        if (is_connected(ludp, connection) >= LUDP_NOT_CONFIRMED) {
+            confirm_connection(ludp, connection);
+
+            while (1) {
+                read = read_packet(ludp, connection, buffer);
+
+                if (read != 0) {
+                    // printf("Received data.\n");
+                    if (!fwrite(buffer, read, 1, file))
                         printf("file write error\n");
+                } else {
+                    break;
+                }
             }
         }
-        if(is_connected(connection) == 4) {
-            printf("Connecting Lost after: %llu us\n", (unsigned long long)(current_time() - timer));
+
+        do_lossless_udp(ludp);
+
+        if (is_connected(ludp, connection) == LUDP_TIMED_OUT) {
+            printf("Server Connecting Lost after: %llu us\n", (unsigned long long)(current_time() - timer));
             fclose(file);
             return 1;
         }
-        c_sleep(1);
+
+        c_sleep(25);
     }
-        
+
     return 0;
 }
