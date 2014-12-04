@@ -36,10 +36,14 @@
 
 /* don't call into system billions of times for no reason */
 static uint64_t unix_time_value;
+static uint64_t unix_base_time_value;
 
 void unix_time_update()
 {
-    unix_time_value = (uint64_t)time(NULL);
+    if (unix_base_time_value == 0)
+        unix_base_time_value = ((uint64_t)time(NULL) - (current_time_monotonic() / 1000ULL));
+
+    unix_time_value = (current_time_monotonic() / 1000ULL) + unix_base_time_value;
 }
 
 uint64_t unix_time()
@@ -49,17 +53,17 @@ uint64_t unix_time()
 
 int is_timeout(uint64_t timestamp, uint64_t timeout)
 {
-    return timestamp + timeout <= unix_time_value;
+    return timestamp + timeout <= unix_time();
 }
 
 
 /* id functions */
-bool id_equal(uint8_t *dest, uint8_t *src)
+bool id_equal(const uint8_t *dest, const uint8_t *src)
 {
     return memcmp(dest, src, CLIENT_ID_SIZE) == 0;
 }
 
-uint32_t id_copy(uint8_t *dest, uint8_t *src)
+uint32_t id_copy(uint8_t *dest, const uint8_t *src)
 {
     memcpy(dest, src, CLIENT_ID_SIZE);
     return CLIENT_ID_SIZE;
@@ -67,27 +71,51 @@ uint32_t id_copy(uint8_t *dest, uint8_t *src)
 
 void host_to_net(uint8_t *num, uint16_t numbytes)
 {
-    union {
-        uint32_t i;
-        uint8_t c[4];
-    } a;
-    a.i = 1;
+#ifndef WORDS_BIGENDIAN
+    uint32_t i;
+    uint8_t buff[numbytes];
 
-    if (a.c[0] == 1) {
-        uint32_t i;
-        uint8_t buff[numbytes];
-
-        for (i = 0; i < numbytes; ++i) {
-            buff[i] = num[numbytes - i - 1];
-        }
-
-        memcpy(num, buff, numbytes);
+    for (i = 0; i < numbytes; ++i) {
+        buff[i] = num[numbytes - i - 1];
     }
+
+    memcpy(num, buff, numbytes);
+#endif
+    return;
+}
+
+uint16_t lendian_to_host16(uint16_t lendian)
+{
+#ifdef WORDS_BIGENDIAN
+    return  (lendian << 8) | (lendian >> 8 );
+#else
+    return lendian;
+#endif
+}
+
+void host_to_lendian32(uint8_t *dest,  uint32_t num)
+{
+#ifdef WORDS_BIGENDIAN
+    num = ((num << 8) & 0xFF00FF00 ) | ((num >> 8) & 0xFF00FF );
+    num = (num << 16) | (num >> 16);
+#endif
+    memcpy(dest, &num, sizeof(uint32_t));
+}
+
+void lendian_to_host32(uint32_t *dest, const uint8_t *lendian)
+{
+    uint32_t d;
+    memcpy(&d, lendian, sizeof(uint32_t));
+#ifdef WORDS_BIGENDIAN
+    d = ((d << 8) & 0xFF00FF00 ) | ((d >> 8) & 0xFF00FF );
+    d = (d << 16) | (d >> 16);
+#endif
+    *dest = d;
 }
 
 /* state load/save */
 int load_state(load_state_callback_func load_state_callback, void *outer,
-               uint8_t *data, uint32_t length, uint16_t cookie_inner)
+               const uint8_t *data, uint32_t length, uint16_t cookie_inner)
 {
     if (!load_state_callback || !data) {
 #ifdef DEBUG
@@ -99,11 +127,11 @@ int load_state(load_state_callback_func load_state_callback, void *outer,
 
     uint16_t type;
     uint32_t length_sub, cookie_type;
-    uint32_t size32 = sizeof(uint32_t), size_head = size32 * 2;
+    uint32_t size_head = sizeof(uint32_t) * 2;
 
     while (length >= size_head) {
-        length_sub = *(uint32_t *)data;
-        cookie_type = *(uint32_t *)(data + size32);
+        lendian_to_host32(&length_sub, data);
+        lendian_to_host32(&cookie_type, data + sizeof(length_sub));
         data += size_head;
         length -= size_head;
 
@@ -115,7 +143,7 @@ int load_state(load_state_callback_func load_state_callback, void *outer,
             return -1;
         }
 
-        if ((cookie_type >> 16) != cookie_inner) {
+        if (lendian_to_host16((cookie_type >> 16)) != cookie_inner) {
             /* something is not matching up in a bad way, give up */
 #ifdef DEBUG
             fprintf(stderr, "state file garbeled: %04hx != %04hx\n", (cookie_type >> 16), cookie_inner);
@@ -123,7 +151,7 @@ int load_state(load_state_callback_func load_state_callback, void *outer,
             return -1;
         }
 
-        type = cookie_type & 0xFFFF;
+        type = lendian_to_host16(cookie_type & 0xFFFF);
 
         if (-1 == load_state_callback(outer, data, length_sub, type))
             return -1;
@@ -135,86 +163,25 @@ int load_state(load_state_callback_func load_state_callback, void *outer,
     return length == 0 ? 0 : -1;
 };
 
-#ifdef LOGGING
-time_t starttime = 0;
-size_t logbufferprelen = 0;
-char *logbufferpredata = NULL;
-char *logbufferprehead = NULL;
-char logbuffer[512];
-static FILE *logfile = NULL;
-void loginit(uint16_t port)
+int create_recursive_mutex(pthread_mutex_t *mutex)
 {
-    if (logfile)
-        fclose(logfile);
+    pthread_mutexattr_t attr;
 
-    if (!starttime) {
-        unix_time_update();
-        starttime = unix_time();
+    if (pthread_mutexattr_init(&attr) != 0)
+        return -1;
+
+    if (pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0) {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
     }
 
-    struct tm *tm = localtime(&starttime);
-
-    /* "%F %T" might not be Windows compatible */
-    if (strftime(logbuffer + 32, sizeof(logbuffer) - 32, "%F %T", tm))
-        sprintf(logbuffer, "%u-%s.log", ntohs(port), logbuffer + 32);
-    else
-        sprintf(logbuffer, "%u-%lu.log", ntohs(port), starttime);
-
-    logfile = fopen(logbuffer, "w");
-
-    if (logbufferpredata) {
-        if (logfile)
-            fprintf(logfile, "%s", logbufferpredata);
-
-        free(logbufferpredata);
-        logbufferpredata = NULL;
+    /* Create queue mutex */
+    if (pthread_mutex_init(mutex, &attr) != 0) {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
     }
 
-};
-void loglog(char *text)
-{
-    if (logfile) {
-        fprintf(logfile, "%4u %s", (uint32_t)(unix_time() - starttime), text);
-        fflush(logfile);
+    pthread_mutexattr_destroy(&attr);
 
-        return;
-    }
-
-    /* log messages before file was opened: store */
-
-    size_t len = strlen(text);
-
-    if (!starttime) {
-        unix_time_update();
-        starttime = unix_time();
-
-        logbufferprelen = 1024 + len - (len % 1024);
-        logbufferpredata = malloc(logbufferprelen);
-        logbufferprehead = logbufferpredata;
-    }
-
-    /* loginit() called meanwhile? (but failed to open) */
-    if (!logbufferpredata)
-        return;
-
-    if (len + (logbufferprehead - logbufferpredata) + 16U < logbufferprelen) {
-        size_t logpos = logbufferprehead - logbufferpredata;
-        size_t lennew = logbufferprelen * 1.4;
-        logbufferpredata = realloc(logbufferpredata, lennew);
-        logbufferprehead = logbufferpredata + logpos;
-        logbufferprelen = lennew;
-    }
-
-    int written = sprintf(logbufferprehead, "%4u %s", (uint32_t)(unix_time() - starttime), text);
-    logbufferprehead += written;
+    return 0;
 }
-
-void logexit()
-{
-    if (logfile) {
-        fclose(logfile);
-        logfile = NULL;
-    }
-};
-#endif
-

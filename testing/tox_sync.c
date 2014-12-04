@@ -40,13 +40,15 @@
 
 #include <dirent.h>
 #include <stdio.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define NUM_FILE_SENDERS 256
 typedef struct {
     FILE *file;
     uint16_t friendnum;
     uint8_t filenumber;
-    uint8_t nextpiece[1024];
+    uint8_t nextpiece[1400];
     uint16_t piecelength;
 } File_t;
 File_t file_senders[NUM_FILE_SENDERS];
@@ -62,8 +64,8 @@ void send_filesenders(Tox *m)
             continue;
 
         while (1) {
-            if (!tox_file_send_data(m, file_senders[i].friendnum, file_senders[i].filenumber, file_senders[i].nextpiece,
-                                    file_senders[i].piecelength))
+            if (tox_file_send_data(m, file_senders[i].friendnum, file_senders[i].filenumber, file_senders[i].nextpiece,
+                                   file_senders[i].piecelength) != 0)
                 break;
 
             file_senders[i].piecelength = fread(file_senders[i].nextpiece, 1, tox_file_data_size(m, file_senders[i].friendnum),
@@ -128,7 +130,7 @@ int not_sending()
 
 static char path[1024];
 
-void file_request_accept(Tox *m, int friendnumber, uint8_t filenumber, uint64_t filesize, uint8_t *filename,
+void file_request_accept(Tox *m, int friendnumber, uint8_t filenumber, uint64_t filesize, const uint8_t *filename,
                          uint16_t filename_length, void *userdata)
 {
     char fullpath[1024];
@@ -160,14 +162,14 @@ void file_request_accept(Tox *m, int friendnumber, uint8_t filenumber, uint64_t 
         return;
     }
 
-    if (tox_file_send_control(m, friendnumber, 1, filenumber, TOX_FILECONTROL_ACCEPT, 0, 0)) {
+    if (tox_file_send_control(m, friendnumber, 1, filenumber, TOX_FILECONTROL_ACCEPT, 0, 0) == 0) {
         printf("Accepted file transfer. (file: %s)\n", fullpath);
     }
 
 }
 
 void file_print_control(Tox *m, int friendnumber, uint8_t recieve_send, uint8_t filenumber, uint8_t control_type,
-                        uint8_t *data,
+                        const uint8_t *data,
                         uint16_t length, void *userdata)
 {
     if (recieve_send == 1 && (control_type == TOX_FILECONTROL_KILL || control_type == TOX_FILECONTROL_FINISHED)) {
@@ -183,7 +185,7 @@ void file_print_control(Tox *m, int friendnumber, uint8_t recieve_send, uint8_t 
     }
 }
 
-void write_file(Tox *m, int friendnumber, uint8_t filenumber, uint8_t *data, uint16_t length, void *userdata)
+void write_file(Tox *m, int friendnumber, uint8_t filenumber, const uint8_t *data, uint16_t length, void *userdata)
 {
     if (file_recv[filenumber].file != 0)
         if (fwrite(data, length, 1, file_recv[filenumber].file) != 1)
@@ -212,15 +214,15 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
-    Tox *tox = tox_new(ipv6enabled);
+    Tox *tox = tox_new(0);
     tox_callback_file_data(tox, write_file, NULL);
     tox_callback_file_control(tox, file_print_control, NULL);
     tox_callback_file_send_request(tox, file_request_accept, NULL);
     tox_callback_connection_status(tox, print_online, NULL);
 
-    uint16_t port = htons(atoi(argv[argvoffset + 2]));
+    uint16_t port = atoi(argv[argvoffset + 2]);
     unsigned char *binary_string = hex_string_to_bin(argv[argvoffset + 3]);
-    int res = tox_bootstrap_from_address(tox, argv[argvoffset + 1], ipv6enabled, port, binary_string);
+    int res = tox_bootstrap_from_address(tox, argv[argvoffset + 1], port, binary_string);
     free(binary_string);
 
     if (!res) {

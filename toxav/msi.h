@@ -1,4 +1,4 @@
-/**  toxmsi.h
+/**  msi.h
  *
  *   Copyright (C) 2013 Tox project All Rights Reserved.
  *
@@ -17,8 +17,6 @@
  *   You should have received a copy of the GNU General Public License
  *   along with Tox. If not, see <http://www.gnu.org/licenses/>.
  *
- *
- *   Report bugs/suggestions at #tox-dev @ freenode.net:6667
  */
 
 #ifndef __TOXMSI
@@ -27,204 +25,181 @@
 #include <inttypes.h>
 #include <pthread.h>
 
+#include "codec.h"
 #include "../toxcore/Messenger.h"
 
-/* define size for call_id */
-#define CALL_ID_LEN 12
-
-
-typedef void *( *MSICallback ) ( void *arg );
-
+typedef uint8_t MSICallIDType[12];
+typedef uint8_t MSIReasonStrType[255];
+typedef void ( *MSICallbackType ) ( void *agent, int32_t call_idx, void *arg );
 
 /**
- * @brief Call type identifier. Also used as rtp callback prefix.
+ * Call type identifier. Also used as rtp callback prefix.
  */
 typedef enum {
-    type_audio = 70,
-    type_video
+    msi_TypeAudio = 192,
+    msi_TypeVideo
 } MSICallType;
 
 
 /**
- * @brief Call state identifiers.
+ * Call state identifiers.
  */
 typedef enum {
-    call_inviting, /* when sending call invite */
-    call_starting, /* when getting call invite */
-    call_active,
-    call_hold
+    msi_CallInviting, /* when sending call invite */
+    msi_CallStarting, /* when getting call invite */
+    msi_CallActive,
+    msi_CallHold,
+    msi_CallOver
 
 } MSICallState;
 
 
+/**
+ * Encoding settings.
+ */
+typedef struct _MSICodecSettings {
+    MSICallType call_type;
+
+    uint32_t video_bitrate; /* In kbits/s */
+    uint16_t max_video_width; /* In px */
+    uint16_t max_video_height; /* In px */
+
+    uint32_t audio_bitrate; /* In bits/s */
+    uint16_t audio_frame_duration; /* In ms */
+    uint32_t audio_sample_rate; /* In Hz */
+    uint32_t audio_channels;
+} MSICSettings;
+
 
 /**
- * @brief The call struct.
- *
+ * Callbacks ids that handle the states
  */
-typedef struct _MSICall {             /* Call info structure */
-    MSICallState    state;
+typedef enum {
+    msi_OnInvite, /* Incoming call */
+    msi_OnRinging, /* When peer is ready to accept/reject the call */
+    msi_OnStart, /* Call (RTP transmission) started */
+    msi_OnCancel, /* The side that initiated call canceled invite */
+    msi_OnReject, /* The side that was invited rejected the call */
+    msi_OnEnd, /* Call that was active ended */
+    msi_OnRequestTimeout, /* When the requested action didn't get response in specified time */
+    msi_OnPeerTimeout, /* Peer timed out; stop the call */
+    msi_OnPeerCSChange, /* Peer requested Csettings change */
+    msi_OnSelfCSChange /* Csettings change confirmation */
+} MSICallbackID;
 
-    MSICallType     type_local;        /* Type of payload user is ending */
-    MSICallType    *type_peer;         /* Type of payload others are sending */
+/**
+ * Errors
+ */
+typedef enum {
+    msi_ErrorNoCall = -20, /* Trying to perform call action while not in a call */
+    msi_ErrorInvalidState = -21, /* Trying to perform call action while in invalid state*/
+    msi_ErrorAlreadyInCallWithPeer = -22, /* Trying to call peer when already in a call with peer */
+    msi_ErrorReachedCallLimit = -23, /* Cannot handle more calls */
+} MSIError;
 
-    uint8_t         id[CALL_ID_LEN];  /* Random value identifying the call */
+/**
+ * The call struct.
+ */
+typedef struct _MSICall {                  /* Call info structure */
+    struct _MSISession *session;           /* Session pointer */
 
-    uint8_t        *key_local;         /* The key for encryption */
-    uint8_t        *key_peer;          /* The key for decryption */
+    MSICallState        state;
 
-    uint8_t        *nonce_local;       /* Local nonce */
-    uint8_t        *nonce_peer;        /* Peer nonce  */
+    MSICSettings        csettings_local;   /* Local call settings */
+    MSICSettings       *csettings_peer;    /* Peers call settings */
 
-    int             ringing_tout_ms;   /* Ringing timeout in ms */
+    MSICallIDType       id;                /* Random value identifying the call */
 
-    int             request_timer_id;  /* Timer id for outgoing request/action */
-    int             ringing_timer_id;  /* Timer id for ringing timeout */
+    int                 ringing_tout_ms;   /* Ringing timeout in ms */
 
-    pthread_mutex_t mutex;             /* It's to be assumed that call will have
-                                         * seperate thread so add mutex
-                                         */
-    uint32_t       *peers;
-    uint16_t        peer_count;
+    int                 request_timer_id;  /* Timer id for outgoing request/action */
+    int                 ringing_timer_id;  /* Timer id for ringing timeout */
 
+    uint32_t           *peers;
+    uint16_t            peer_count;
 
+    int32_t             call_idx;          /* Index of this call in MSISession */
 } MSICall;
 
 
 /**
- * @brief Control session struct
- *
+ * Control session struct
  */
 typedef struct _MSISession {
 
-    /* Call handler */
-    struct _MSICall *call;
+    /* Call handlers */
+    MSICall       **calls;
+    int32_t         max_calls;
 
-    int            last_error_id; /* Determine the last error */
-    const uint8_t *last_error_str;
+    void           *agent_handler;
+    Messenger      *messenger_handle;
 
-    void *agent_handler; /* Pointer to an object that is handling msi */
-    Messenger  *messenger_handle;
+    uint32_t        frequ;
+    uint32_t        call_timeout;  /* Time of the timeout for some action to end; 0 if infinite */
 
-    uint32_t frequ;
-    uint32_t call_timeout; /* Time of the timeout for some action to end; 0 if infinite */
+    pthread_mutex_t mutex[1];
 
-
+    void           *timer_handler;
+    PAIR(MSICallbackType, void *) callbacks[10];
 } MSISession;
 
+/**
+ * Start the control session.
+ */
+MSISession *msi_new ( Messenger *messenger, int32_t max_calls );
 
 /**
- * @brief Callbacks ids that handle the states
+ * Terminate control session.
  */
-typedef enum {
-    /* Requests */
-    MSI_OnInvite,
-    MSI_OnStart,
-    MSI_OnCancel,
-    MSI_OnReject,
-    MSI_OnEnd,
-
-    /* Responses */
-    MSI_OnRinging,
-    MSI_OnStarting,
-    MSI_OnEnding,
-
-    /* Protocol */
-    MSI_OnError,
-    MSI_OnRequestTimeout
-
-} MSICallbackID;
-
+int msi_kill ( MSISession *session );
 
 /**
- * @brief Callback setter.
- *
- * @param callback The callback.
- * @param id The id.
- * @return void
+ * Callback setter.
  */
-void msi_register_callback(MSICallback callback, MSICallbackID id);
-
+void msi_register_callback(MSISession *session, MSICallbackType callback, MSICallbackID id, void *userdata);
 
 /**
- * @brief Start the control session.
- *
- * @param messenger Tox* object.
- * @return MSISession* The created session.
- * @retval NULL Error occured.
+ * Send invite request to friend_id.
  */
-MSISession *msi_init_session ( Messenger *messenger );
-
+int msi_invite ( MSISession *session,
+                 int32_t *call_index,
+                 const MSICSettings *csettings,
+                 uint32_t rngsec,
+                 uint32_t friend_id );
 
 /**
- * @brief Terminate control session.
- *
- * @param session The session
- * @return int
+ * Hangup active call.
  */
-int msi_terminate_session ( MSISession *session );
-
+int msi_hangup ( MSISession *session, int32_t call_index );
 
 /**
- * @brief Send invite request to friend_id.
- *
- * @param session Control session.
- * @param call_type Type of the call. Audio or Video(both audio and video)
- * @param rngsec Ringing timeout.
- * @param friend_id The friend.
- * @return int
+ * Answer active call request.
  */
-int msi_invite ( MSISession *session, MSICallType call_type, uint32_t rngsec, uint32_t friend_id );
-
+int msi_answer ( MSISession *session, int32_t call_index, const MSICSettings *csettings );
 
 /**
- * @brief Hangup active call.
- *
- * @param session Control session.
- * @return int
- * @retval -1 Error occured.
- * @retval 0 Success.
+ * Cancel request.
  */
-int msi_hangup ( MSISession *session );
-
+int msi_cancel ( MSISession *session, int32_t call_index, uint32_t peer, const char *reason );
 
 /**
- * @brief Answer active call request.
- *
- * @param session Control session.
- * @param call_type Answer with Audio or Video(both).
- * @return int
+ * Reject incoming call.
  */
-int msi_answer ( MSISession *session, MSICallType call_type );
-
+int msi_reject ( MSISession *session, int32_t call_index, const char *reason );
 
 /**
- * @brief Cancel request.
- *
- * @param session Control session.
- * @param peer To which peer.
- * @param reason Set optional reason header. Pass NULL if none.
- * @return int
+ * Terminate the call.
  */
-int msi_cancel ( MSISession *session, uint32_t peer, const uint8_t *reason );
-
+int msi_stopcall ( MSISession *session, int32_t call_index );
 
 /**
- * @brief Reject request.
- *
- * @param session Control session.
- * @param reason Set optional reason header. Pass NULL if none.
- * @return int
+ * Change codec settings of the current call.
  */
-int msi_reject ( MSISession *session, const uint8_t *reason );
-
+int msi_change_csettings ( MSISession *session, int32_t call_index, const MSICSettings *csettings );
 
 /**
- * @brief Terminate the current call.
- *
- * @param session Control session.
- * @return int
+ * Main msi loop
  */
-int msi_stopcall ( MSISession *session );
+void msi_do( MSISession *session );
 
 #endif /* __TOXMSI */

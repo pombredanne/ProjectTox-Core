@@ -25,25 +25,34 @@
 #define ONION_CLIENT_H
 
 #include "onion_announce.h"
+#include "net_crypto.h"
+#include "ping_array.h"
 
 #define MAX_ONION_CLIENTS 8
-#define ONION_NODE_TIMEOUT 240
+#define ONION_NODE_PING_INTERVAL 20
+#define ONION_NODE_TIMEOUT (ONION_NODE_PING_INTERVAL * 4)
 
 /* The interval in seconds at which to tell our friends where we are */
 #define ONION_FAKEID_INTERVAL 30
 #define DHT_FAKEID_INTERVAL 20
 
-#define NUMBER_ONION_PATHS 3
+#define NUMBER_ONION_PATHS 6
 
 /* The timeout the first time the path is added and
    then for all the next consecutive times */
 #define ONION_PATH_FIRST_TIMEOUT 5
 #define ONION_PATH_TIMEOUT 30
+#define ONION_PATH_MAX_LIFETIME 600
 
-/* A cheap way of making it take less bandwidth at startup:
-   by limiting the number of ping packets we can send per
-   second per peer. */
-#define MAX_PING_NODES_SECOND_PEER 5
+#define MAX_STORED_PINGED_NODES 9
+#define MIN_NODE_PING_TIME 10
+
+#define MAX_PATH_NODES 32
+
+/* If no packets are received within that interval tox will
+ * be considered offline.
+ */
+#define ONION_OFFLINE_TIMEOUT (ONION_NODE_PING_INTERVAL * 1.25)
 
 typedef struct {
     uint8_t     client_id[CLIENT_ID_SIZE];
@@ -62,7 +71,13 @@ typedef struct {
 typedef struct {
     Onion_Path paths[NUMBER_ONION_PATHS];
     uint64_t last_path_success[NUMBER_ONION_PATHS];
+    uint64_t path_creation_time[NUMBER_ONION_PATHS];
 } Onion_Client_Paths;
+
+typedef struct {
+    uint8_t     client_id[CLIENT_ID_SIZE];
+    uint64_t    timestamp;
+} Last_Pinged;
 
 typedef struct {
     uint8_t status; /* 0 if friend is not valid, 1 if friend is valid.*/
@@ -84,13 +99,27 @@ typedef struct {
     uint64_t last_seen;
 
     Onion_Client_Paths onion_paths;
-    uint32_t ping_nodes_sent_second;
+
+    Last_Pinged last_pinged[MAX_STORED_PINGED_NODES];
+    uint8_t last_pinged_index;
+
+    int (*tcp_relay_node_callback)(void *object, uint32_t number, IP_Port ip_port, const uint8_t *public_key);
+    void *tcp_relay_node_callback_object;
+    uint32_t tcp_relay_node_callback_number;
+
+    void (*dht_pk_callback)(void *data, int32_t number, const uint8_t *dht_public_key);
+    void *dht_pk_callback_object;
+    uint32_t dht_pk_callback_number;
+
+    uint32_t run_count;
 } Onion_Friend;
 
-typedef int (*oniondata_handler_callback)(void *object, uint8_t *source_pubkey, uint8_t *data, uint32_t len);
+typedef int (*oniondata_handler_callback)(void *object, const uint8_t *source_pubkey, const uint8_t *data,
+        uint16_t len);
 
 typedef struct {
     DHT     *dht;
+    Net_Crypto *c;
     Networking_Core *net;
     Onion_Friend    *friends_list;
     uint16_t       num_friends;
@@ -99,32 +128,54 @@ typedef struct {
 
     Onion_Client_Paths onion_paths;
 
-    uint8_t secret_symmetric_key[crypto_secretbox_KEYBYTES];
+    uint8_t secret_symmetric_key[crypto_box_KEYBYTES];
     uint64_t last_run;
 
     uint8_t temp_public_key[crypto_box_PUBLICKEYBYTES];
     uint8_t temp_secret_key[crypto_box_SECRETKEYBYTES];
 
-    uint32_t ping_nodes_sent_second;
+    Last_Pinged last_pinged[MAX_STORED_PINGED_NODES];
+
+    Node_format path_nodes[MAX_PATH_NODES];
+    uint16_t path_nodes_index;
+
+    Ping_Array announce_ping_array;
+    uint8_t last_pinged_index;
     struct {
         oniondata_handler_callback function;
         void *object;
     } Onion_Data_Handlers[256];
+
+    uint64_t last_packet_recv;
 } Onion_Client;
+
+
+/* Add a node to the path_nodes array.
+ *
+ * return -1 on failure
+ * return 0 on success
+ */
+int onion_add_path_node(Onion_Client *onion_c, IP_Port ip_port, const uint8_t *client_id);
+
+/* Put up to max_num nodes in nodes.
+ *
+ * return the number of nodes.
+ */
+uint16_t onion_backup_nodes(const Onion_Client *onion_c, Node_format *nodes, uint16_t max_num);
 
 /* Add a friend who we want to connect to.
  *
  * return -1 on failure.
  * return the friend number on success or if the friend was already added.
  */
-int onion_friend_num(Onion_Client *onion_c, uint8_t *client_id);
+int onion_friend_num(const Onion_Client *onion_c, const uint8_t *client_id);
 
 /* Add a friend who we want to connect to.
  *
  * return -1 on failure.
  * return the friend number on success.
  */
-int onion_addfriend(Onion_Client *onion_c, uint8_t *client_id);
+int onion_addfriend(Onion_Client *onion_c, const uint8_t *client_id);
 
 /* Delete a friend.
  *
@@ -151,26 +202,74 @@ int onion_set_friend_online(Onion_Client *onion_c, int friend_num, uint8_t is_on
  *  return  1, ip if client_id refers to a friend and we found him
  *
  */
-int onion_getfriendip(Onion_Client *onion_c, int friend_num, IP_Port *ip_port);
+int onion_getfriendip(const Onion_Client *onion_c, int friend_num, IP_Port *ip_port);
 
+/* Set the function for this friend that will be callbacked with object and number
+ * when that friends gives us one of the TCP relays he is connected to.
+ *
+ * object and number will be passed as argument to this function.
+ *
+ * return -1 on failure.
+ * return 0 on success.
+ */
+int recv_tcp_relay_handler(Onion_Client *onion_c, int friend_num, int (*tcp_relay_node_callback)(void *object,
+                           uint32_t number, IP_Port ip_port, const uint8_t *public_key), void *object, uint32_t number);
+
+
+/* Set the function for this friend that will be callbacked with object and number
+ * when that friend gives us his DHT temporary public key.
+ *
+ * object and number will be passed as argument to this function.
+ *
+ * return -1 on failure.
+ * return 0 on success.
+ */
+int onion_dht_pk_callback(Onion_Client *onion_c, int friend_num, void (*function)(void *data, int32_t number,
+                          const uint8_t *dht_public_key), void *object, uint32_t number);
+
+/* Set a friends DHT public key.
+ * timestamp is the time (current_time_monotonic()) at which the key was last confirmed belonging to
+ * the other peer.
+ *
+ * return -1 on failure.
+ * return 0 on success.
+ */
+int onion_set_friend_DHT_pubkey(Onion_Client *onion_c, int friend_num, const uint8_t *dht_key);
+
+/* Copy friends DHT public key into dht_key.
+ *
+ * return 0 on failure (no key copied).
+ * return 1 on success (key copied).
+ */
+unsigned int onion_getfriend_DHT_pubkey(const Onion_Client *onion_c, int friend_num, uint8_t *dht_key);
+
+#define ONION_DATA_IN_RESPONSE_MIN_SIZE (crypto_box_PUBLICKEYBYTES + crypto_box_MACBYTES)
+#define ONION_CLIENT_MAX_DATA_SIZE (MAX_DATA_REQUEST_SIZE - ONION_DATA_IN_RESPONSE_MIN_SIZE)
 
 /* Send data of length length to friendnum.
- * This data will be recieved by the friend using the Onion_Data_Handlers callbacks.
+ * Maximum length of data is ONION_CLIENT_MAX_DATA_SIZE.
+ * This data will be received by the friend using the Onion_Data_Handlers callbacks.
  *
- * Even if this function succeeds, the friend might not recieve any data.
+ * Even if this function succeeds, the friend might not receive any data.
  *
  * return the number of packets sent on success
  * return -1 on failure.
  */
-int send_onion_data(Onion_Client *onion_c, int friend_num, uint8_t *data, uint32_t length);
+int send_onion_data(const Onion_Client *onion_c, int friend_num, const uint8_t *data, uint16_t length);
 
 /* Function to call when onion data packet with contents beginning with byte is received. */
 void oniondata_registerhandler(Onion_Client *onion_c, uint8_t byte, oniondata_handler_callback cb, void *object);
 
 void do_onion_client(Onion_Client *onion_c);
 
-Onion_Client *new_onion_client(DHT *dht);
+Onion_Client *new_onion_client(Net_Crypto *c);
 
 void kill_onion_client(Onion_Client *onion_c);
+
+
+/*  return 0 if we are not connected to the network.
+ *  return 1 if we are.
+ */
+int onion_isconnected(const Onion_Client *onion_c);
 
 #endif

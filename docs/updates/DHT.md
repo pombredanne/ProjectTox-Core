@@ -36,39 +36,39 @@ Send a get nodes request every 20 seconds to a random good node in the client li
 
 When a client receives any request from another
 -----------------------------------------------
--Respond to the request
-    -Ping request is replied to with with a ping response containing the same encrypted data
-    -Get nodes request is replied with a send nodes reply containing the same encrypted data and the good nodes from the client list and/or the "friends" list that are closest to the requested_node_id
+- Respond to the request
+    - Ping request is replied to with with a ping response containing the same encrypted data
+    - Get nodes request is replied with a send nodes reply containing the same encrypted data and the good nodes from the client list and/or the "friends" list that are closest to the requested_node_id
 
--If the requesting client is not in the client list:
-    -If there are no bad clients in the list and the list is full:
-        -If the id of the other client is closer (mathematically see bittorrent doc) than at least one of the clients in the list or our "friends" list:
-            -Send a ping request to the client.
-        -if not forget about the client.
+- If the requesting client is not in the client list:
+    - If there are no bad clients in the list and the list is full:
+        - If the id of the other client is closer (mathematically see bittorrent doc) than at least one of the clients in the list or our "friends" list:
+            - Send a ping request to the client.
+        - if not forget about the client.
 
-    -If there are bad clients and/or the list isn't full:
-        -Send a ping request to the client 
+    - If there are bad clients and/or the list isn't full:
+        - Send a ping request to the client 
 
 When a client receives a response
 ---------------------------------
--Ping response
-    -If the node was previously pinged with a matching ping_id (check in the corresponding pinged list.)
-        -If the node is in the client list the matching client's timestamp is set to current time.
-        -If the node is in the "friends" list the matching client's timestamp is set to current time for every occurrence.
-        -If the node is not in the client list:
-            -If the list isn't full, add it to the list.
-            -If the list is full, the furthest away (mathematically see bittorrent doc) bad client is replaced by the new one.
-            -If the list is filled with good nodes replace the furthest client with it only if it is closer than the replaced node.
-        -for each friend in the "friends" list:
-            -If that friend's client list isn't full, add that client to it
-            -If that friend's client list contains bad clients, replace the furthest one with that client.
-            -If that friend's client list contains only good clients
-                -If the client is closer to the friend than one of the other clients, it replaces the farthest one
-                -If not, nothing happens.
+- Ping response
+    - If the node was previously pinged with a matching ping_id (check in the corresponding pinged list.)
+        - If the node is in the client list the matching client's timestamp is set to current time.
+        - If the node is in the "friends" list the matching client's timestamp is set to current time for every occurrence.
+        - If the node is not in the client list:
+            - If the list isn't full, add it to the list.
+            - If the list is full, the furthest away (mathematically see bittorrent doc) bad client is replaced by the new one.
+            - If the list is filled with good nodes replace the furthest client with it only if it is closer than the replaced node.
+        - for each friend in the "friends" list:
+            - If that friend's client list isn't full, add that client to it
+            - If that friend's client list contains bad clients, replace the furthest one with that client.
+            - If that friend's client list contains only good clients
+                - If the client is closer to the friend than one of the other clients, it replaces the farthest one
+                - If not, nothing happens.
 
-    -Send nodes
-        -If the ping_id matches what we sent previously (check in the corresponding pinged list.):
-            -Each node in the response is pinged.
+    - Send nodes
+        - If the ping_id matches what we sent previously (check in the corresponding pinged list.):
+            - Each node in the response is pinged.
 
 
 
@@ -79,18 +79,15 @@ Protocol
 
 Node format: 
 ```
-[char array (node_id), length=32 bytes][ip (in network byte order), length=4 bytes][port (in network byte order), length=2 bytes][Padding , length=2 bytes]
+[uint8_t family (2 == IPv4, 10 == IPv6, 130 == TCP IPv4, 138 == TCP IPv6)][ip (in network byte order), length=4 bytes if ipv4, 16 bytes if ipv6][port (in network byte order), length=2 bytes][char array (node_id), length=32 bytes]
 ```
-see also: DHT.h (Node4_format struct)
-
-IPv6 Node format: 
-see: DHT.h (Node_format struct)
+see also: DHT.h (pack_nodes() and unpack_nodes())
 
 Valid queries and Responses:
 
 Ping(Request and response): 
 ```
-[byte with value: 00 for request, 01 for response][char array (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender: [random 8 byte (ping_id)]]
+[byte with value: 00 for request, 01 for response][char array (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender: [1 byte type (0 for request, 1 for response)][random 8 byte (ping_id)]]
 ```
 ping_id = a random integer, the response must contain the exact same number as the request
 
@@ -98,16 +95,11 @@ ping_id = a random integer, the response must contain the exact same number as t
 Get nodes (Request):
 Packet contents: 
 ```
-[byte with value: 02][char array (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender:[char array: requested_node_id (node_id of which we want the ip), length=32 bytes][Encrypted data (must be sent back unmodified by in the response), length=NODES_ENCRYPTED_MESSAGE_LENGTH bytes]]
+[byte with value: 02][char array (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender:[char array: requested_node_id (node_id of which we want the ip), length=32 bytes][Sendback data (must be sent back unmodified by in the response), length=1 to NODES_ENCRYPTED_MESSAGE_LENGTH bytes]]
 ```
 Valid replies: a send_nodes packet
 
-Send_nodes (response (for ipv4 addresses)): 
+Send_nodes (response (for all addresses)): 
 ```
-[byte with value: 03][char array  (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender:[Nodes in node format, length=40 * (number of nodes (maximum of 8 nodes)) bytes][Encrypted data, length=NODES_ENCRYPTED_MESSAGE_LENGTH bytes]]
-```
-
-Send_nodes_IPv6 (response (for ipv6 addresses)): 
-```
-[byte with value: 04][char array  (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender:[Nodes in ipv6_node format, length=56 * (number of nodes (maximum of 8 nodes)) bytes][Encrypted data, length=NODES_ENCRYPTED_MESSAGE_LENGTH bytes]]
+[byte with value: 04][char array  (client node_id), length=32 bytes][random 24 byte nonce][Encrypted with the nonce and private key of the sender:[uint8_t number of nodes in this packet][Nodes in node format, length=?? * (number of nodes (maximum of 8 nodes)) bytes][Sendback data, length=1 to NODES_ENCRYPTED_MESSAGE_LENGTH bytes]]
 ```

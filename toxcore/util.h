@@ -27,6 +27,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
+
+#define MIN(a,b) (((a)<(b))?(a):(b))
 
 void unix_time_update();
 uint64_t unix_time();
@@ -34,22 +37,22 @@ int is_timeout(uint64_t timestamp, uint64_t timeout);
 
 
 /* id functions */
-bool id_equal(uint8_t *dest, uint8_t *src);
-uint32_t id_copy(uint8_t *dest, uint8_t *src); /* return value is CLIENT_ID_SIZE */
+bool id_equal(const uint8_t *dest, const uint8_t *src);
+uint32_t id_copy(uint8_t *dest, const uint8_t *src); /* return value is CLIENT_ID_SIZE */
 
 void host_to_net(uint8_t *num, uint16_t numbytes);
 #define net_to_host(x, y) host_to_net(x, y)
 
-/* state load/save */
-typedef int (*load_state_callback_func)(void *outer, uint8_t *data, uint32_t len, uint16_t type);
-int load_state(load_state_callback_func load_state_callback, void *outer,
-               uint8_t *data, uint32_t length, uint16_t cookie_inner);
+uint16_t lendian_to_host16(uint16_t lendian);
+#define host_tolendian16(x) lendian_to_host16(x)
 
-#ifdef LOGGING
-extern char logbuffer[512];
-void loginit(uint16_t port);
-void loglog(char *text);
-void logexit();
-#endif
+void host_to_lendian32(uint8_t *dest,  uint32_t num);
+
+/* state load/save */
+typedef int (*load_state_callback_func)(void *outer, const uint8_t *data, uint32_t len, uint16_t type);
+int load_state(load_state_callback_func load_state_callback, void *outer,
+               const uint8_t *data, uint32_t length, uint16_t cookie_inner);
+
+int create_recursive_mutex(pthread_mutex_t *mutex);
 
 #endif /* __UTIL_H__ */

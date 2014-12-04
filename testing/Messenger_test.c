@@ -56,7 +56,7 @@
 
 #endif
 
-void print_message(Messenger *m, int friendnumber, uint8_t *string, uint16_t length, void *userdata)
+void print_message(Messenger *m, int friendnumber, const uint8_t *string, uint16_t length, void *userdata)
 {
     printf("Message with length %u received from %u: %s \n", length, friendnumber, string);
     m_sendmessage(m, friendnumber, (uint8_t *)"Test1", 6);
@@ -66,7 +66,7 @@ void print_message(Messenger *m, int friendnumber, uint8_t *string, uint16_t len
  * networking_requesthandler and so cannot take a Messenger * */
 static Messenger *m;
 
-void print_request(uint8_t *public_key, uint8_t *data, uint16_t length, void *userdata)
+void print_request(Messenger *m, const uint8_t *public_key, const uint8_t *data, uint16_t length, void *userdata)
 {
     printf("Friend request received from: \n");
     printf("ClientID: ");
@@ -110,7 +110,9 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
-    m = new_messenger(ipv6enabled);
+    Messenger_Options options = {0};
+    options.ipv6enabled = ipv6enabled;
+    m = new_messenger(&options);
 
     if ( !m ) {
         fputs("Failed to allocate messenger datastructure\n", stderr);

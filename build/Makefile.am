@@ -5,6 +5,8 @@ noinst_bindir = $(top_builddir)/build
 EXTRA_DIST=
 
 include ../toxcore/Makefile.inc
+include ../toxdns/Makefile.inc
+include ../toxencryptsave/Makefile.inc
 include ../toxav/Makefile.inc
 include ../other/Makefile.inc
 include ../testing/Makefile.inc

@@ -1,4 +1,4 @@
-/**  toxrtp.h
+/**  rtp.h
  *
  *   Copyright (C) 2013 Tox project All Rights Reserved.
  *
@@ -17,8 +17,6 @@
  *   You should have received a copy of the GNU General Public License
  *   along with Tox. If not, see <http://www.gnu.org/licenses/>.
  *
- *
- *   Report bugs/suggestions at #tox-dev @ freenode.net:6667
  */
 
 #ifndef __TOXRTP
@@ -26,36 +24,32 @@
 
 #define RTP_VERSION 2
 #include <inttypes.h>
-#include <pthread.h>
+// #include <pthread.h>
 
-#include "../toxcore/util.h"
-#include "../toxcore/network.h"
-#include "../toxcore/net_crypto.h"
 #include "../toxcore/Messenger.h"
 
 #define MAX_SEQU_NUM 65535
 #define MAX_RTP_SIZE 65535
 
+typedef enum {
+    rtp_ErrorSending = -40
+} RTPError;
 /**
- * @brief Standard rtp header
- *
+ * Standard rtp header
  */
-
 typedef struct _RTPHeader {
-    uint8_t   flags;             /* Version(2),Padding(1), Ext(1), Cc(4) */
-    uint8_t   marker_payloadt;   /* Marker(1), PlayLoad Type(7) */
-    uint16_t  sequnum;           /* Sequence Number */
-    uint32_t  timestamp;         /* Timestamp */
-    uint32_t  ssrc;              /* SSRC */
-    uint32_t *csrc;              /* CSRC's table */
-    uint32_t  length;            /* Length of the header in payload string. */
+    uint8_t  flags;             /* Version(2),Padding(1), Ext(1), Cc(4) */
+    uint8_t  marker_payloadt;   /* Marker(1), PlayLoad Type(7) */
+    uint16_t sequnum;           /* Sequence Number */
+    uint32_t timestamp;         /* Timestamp */
+    uint32_t ssrc;              /* SSRC */
+    uint32_t csrc[16];          /* CSRC's table */
+    uint32_t length;            /* Length of the header in payload string. */
 
 } RTPHeader;
 
-
 /**
- * @brief Standard rtp extension header.
- *
+ * Standard rtp extension header.
  */
 typedef struct _RTPExtHeader {
     uint16_t  type;          /* Extension profile */
@@ -64,10 +58,8 @@ typedef struct _RTPExtHeader {
 
 } RTPExtHeader;
 
-
 /**
- * @brief Standard rtp message.
- *
+ * Standard rtp message.
  */
 typedef struct _RTPMessage {
     RTPHeader    *header;
@@ -75,19 +67,12 @@ typedef struct _RTPMessage {
 
     uint8_t       data[MAX_RTP_SIZE];
     uint32_t      length;
-    IP_Port   from;
 
     struct _RTPMessage   *next;
 } RTPMessage;
 
-
 /**
- * @brief Our main session descriptor.
- *        It measures the session variables and controls
- *        the entire session. There are functions for manipulating
- *        the session so tend to use those instead of directly modifying
- *        session parameters.
- *
+ * RTP control session.
  */
 typedef struct _RTPSession {
     uint8_t         version;
@@ -108,111 +93,34 @@ typedef struct _RTPSession {
      */
     RTPExtHeader   *ext_header;
 
-    /* External header identifiers */
-    int             resolution;
-    int             framerate;
-
-
-    /* Since these are only references of the
-     * call structure don't allocate or free
-     */
-
-    const uint8_t  *encrypt_key;
-    const uint8_t  *decrypt_key;
-    uint8_t        *encrypt_nonce;
-    uint8_t        *decrypt_nonce;
-
-    uint8_t        *nonce_cycle;
-
-    RTPMessage     *oldest_msg;
-    RTPMessage     *last_msg; /* tail */
-
     /* Msg prefix for core to know when recving */
     uint8_t         prefix;
 
-    pthread_mutex_t mutex;
     int             dest;
+
+    struct _CSSession *cs;
 
 } RTPSession;
 
-
 /**
- * @brief Release all messages held by session.
- *
- * @param session The session.
- * @return int
- * @retval -1 Error occurred.
- * @retval 0 Success.
+ * Must be called before calling any other rtp function.
  */
-int rtp_release_session_recv ( RTPSession *session );
-
+RTPSession *rtp_new ( int payload_type, Messenger *messenger, int friend_num );
 
 /**
- * @brief Get's oldest message in the list.
- *
- * @param session Where the list is.
- * @return RTPMessage* The message. You need to call rtp_msg_free() to free it.
- * @retval NULL No messages in the list, or no list.
+ * Terminate the session.
  */
-RTPMessage *rtp_recv_msg ( RTPSession *session );
-
+void rtp_kill ( RTPSession *session, Messenger *messenger );
 
 /**
- * @brief Sends msg to _RTPSession::dest
- *
- * @param session The session.
- * @param msg The message
- * @param messenger Tox* object.
- * @return int
- * @retval -1 On error.
- * @retval 0 On success.
+ * Sends msg to _RTPSession::dest
  */
 int rtp_send_msg ( RTPSession *session, Messenger *messenger, const uint8_t *data, uint16_t length );
 
-
 /**
- * @brief Speaks for it self.
- *
- * @param session The control session msg belongs to. It can be NULL.
- * @param msg The message.
- * @return void
+ * Dealloc msg.
  */
 void rtp_free_msg ( RTPSession *session, RTPMessage *msg );
-
-
-/**
- * @brief Must be called before calling any other rtp function. It's used
- *        to initialize RTP control session.
- *
- * @param payload_type Type of payload used to send. You can use values in toxmsi.h::MSICallType
- * @param messenger Tox* object.
- * @param friend_num Friend id.
- * @param encrypt_key Speaks for it self.
- * @param decrypt_key Speaks for it self.
- * @param encrypt_nonce Speaks for it self.
- * @param decrypt_nonce Speaks for it self.
- * @return RTPSession* Created control session.
- * @retval NULL Error occurred.
- */
-RTPSession *rtp_init_session ( int            payload_type,
-                               Messenger           *messenger,
-                               int            friend_num,
-                               const uint8_t *encrypt_key,
-                               const uint8_t *decrypt_key,
-                               const uint8_t *encrypt_nonce,
-                               const uint8_t *decrypt_nonce );
-
-
-/**
- * @brief Terminate the session.
- *
- * @param session The session.
- * @param messenger The messenger who owns the session
- * @return int
- * @retval -1 Error occurred.
- * @retval 0 Success.
- */
-int rtp_terminate_session ( RTPSession *session, Messenger *messenger );
 
 
 

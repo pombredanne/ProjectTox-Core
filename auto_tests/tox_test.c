@@ -12,6 +12,8 @@
 
 #include "../toxcore/tox.h"
 
+#include "helpers.h"
+
 #if defined(_WIN32) || defined(__WIN32__) || defined (WIN32)
 #define c_sleep(x) Sleep(1*x)
 #else
@@ -19,28 +21,32 @@
 #define c_sleep(x) usleep(1000*x)
 #endif
 
-void accept_friend_request(uint8_t *public_key, uint8_t *data, uint16_t length, void *userdata)
-{
-    Tox *t = userdata;
-
-    if (length == 7 && memcmp("Gentoo", data, 7) == 0) {
-        tox_add_friend_norequest(t, public_key);
-    }
-}
-uint32_t messages_received;
-
-void print_message(Tox *m, int friendnumber, uint8_t *string, uint16_t length, void *userdata)
+void accept_friend_request(Tox *m, const uint8_t *public_key, const uint8_t *data, uint16_t length, void *userdata)
 {
     if (*((uint32_t *)userdata) != 974536)
         return;
 
-    if (length == sizeof("Install Gentoo") && memcmp(string, "Install Gentoo", sizeof("Install Gentoo")) == 0)
+    if (length == 7 && memcmp("Gentoo", data, 7) == 0) {
+        tox_add_friend_norequest(m, public_key);
+    }
+}
+uint32_t messages_received;
+
+void print_message(Tox *m, int friendnumber, const uint8_t *string, uint16_t length, void *userdata)
+{
+    if (*((uint32_t *)userdata) != 974536)
+        return;
+
+    uint8_t cmp_msg[TOX_MAX_MESSAGE_LENGTH];
+    memset(cmp_msg, 'G', sizeof(cmp_msg));
+
+    if (length == TOX_MAX_MESSAGE_LENGTH && memcmp(string, cmp_msg, sizeof(cmp_msg)) == 0)
         ++messages_received;
 }
 
 uint32_t name_changes;
 
-void print_nickchange(Tox *m, int friendnumber, uint8_t *string, uint16_t length, void *userdata)
+void print_nickchange(Tox *m, int friendnumber, const uint8_t *string, uint16_t length, void *userdata)
 {
     if (*((uint32_t *)userdata) != 974536)
         return;
@@ -51,7 +57,7 @@ void print_nickchange(Tox *m, int friendnumber, uint8_t *string, uint16_t length
 
 uint32_t typing_changes;
 
-void print_typingchange(Tox *m, int friendnumber, int typing, void *userdata)
+void print_typingchange(Tox *m, int friendnumber, uint8_t typing, void *userdata)
 {
     if (*((uint32_t *)userdata) != 974536)
         return;
@@ -62,10 +68,31 @@ void print_typingchange(Tox *m, int friendnumber, int typing, void *userdata)
         typing_changes = 2;
 }
 
+uint32_t custom_packet;
+
+int handle_custom_packet(void *object, const uint8_t *data, uint32_t len)
+{
+    uint8_t number = *((uint32_t *)object);
+
+    if (len != TOX_MAX_CUSTOM_PACKET_SIZE)
+        return -1;
+
+    uint8_t f_data[len];
+    memset(f_data, number, len);
+
+    if (memcmp(f_data, data, len) == 0) {
+        ++custom_packet;
+    } else {
+        printf("Custom packet fail. %u\n", number );
+    }
+
+    return 0;
+}
+
 uint8_t filenum;
 uint32_t file_accepted;
 uint64_t file_size;
-void file_request_accept(Tox *m, int friendnumber, uint8_t filenumber, uint64_t filesize, uint8_t *filename,
+void file_request_accept(Tox *m, int friendnumber, uint8_t filenumber, uint64_t filesize, const uint8_t *filename,
                          uint16_t filename_length, void *userdata)
 {
     if (*((uint32_t *)userdata) != 974536)
@@ -80,41 +107,50 @@ void file_request_accept(Tox *m, int friendnumber, uint8_t filenumber, uint64_t 
 
 uint32_t file_sent;
 uint32_t sendf_ok;
-void file_print_control(Tox *m, int friendnumber, uint8_t send_recieve, uint8_t filenumber, uint8_t control_type,
-                        uint8_t *data, uint16_t length, void *userdata)
+void file_print_control(Tox *m, int friendnumber, uint8_t receive_send, uint8_t filenumber, uint8_t control_type,
+                        const uint8_t *data, uint16_t length, void *userdata)
 {
     if (*((uint32_t *)userdata) != 974536)
         return;
 
-    if (send_recieve == 0 && control_type == TOX_FILECONTROL_FINISHED)
+    if (receive_send == 0 && control_type == TOX_FILECONTROL_FINISHED)
+        tox_file_send_control(m, friendnumber, 1, filenumber, TOX_FILECONTROL_FINISHED, NULL, 0);
+
+    if (receive_send == 1 && control_type == TOX_FILECONTROL_FINISHED)
         file_sent = 1;
 
-    if (send_recieve == 1 && control_type == TOX_FILECONTROL_ACCEPT)
+    if (receive_send == 1 && control_type == TOX_FILECONTROL_ACCEPT)
         sendf_ok = 1;
 
 }
 
 uint64_t size_recv;
-void write_file(Tox *m, int friendnumber, uint8_t filenumber, uint8_t *data, uint16_t length, void *userdata)
+uint8_t num;
+void write_file(Tox *m, int friendnumber, uint8_t filenumber, const uint8_t *data, uint16_t length, void *userdata)
 {
     if (*((uint32_t *)userdata) != 974536)
         return;
 
-    uint8_t *f_data = malloc(length);
-    memset(f_data, 6, length);
+    uint8_t f_data[length];
+    memset(f_data, num, length);
+    ++num;
 
-    if (memcmp(f_data, data, length) == 0)
+    if (memcmp(f_data, data, length) == 0) {
         size_recv += length;
+    } else {
+        printf("FILE_CORRUPTED\n");
+    }
 }
 
 START_TEST(test_few_clients)
 {
-    long long unsigned int cur_time = time(NULL);
-    Tox *tox1 = tox_new(TOX_ENABLE_IPV6_DEFAULT);
-    Tox *tox2 = tox_new(TOX_ENABLE_IPV6_DEFAULT);
-    Tox *tox3 = tox_new(TOX_ENABLE_IPV6_DEFAULT);
+    long long unsigned int con_time, cur_time = time(NULL);
+    Tox *tox1 = tox_new(0);
+    Tox *tox2 = tox_new(0);
+    Tox *tox3 = tox_new(0);
     ck_assert_msg(tox1 || tox2 || tox3, "Failed to create 3 tox instances");
-    tox_callback_friend_request(tox2, accept_friend_request, tox2);
+    uint32_t to_compare = 974536;
+    tox_callback_friend_request(tox2, accept_friend_request, &to_compare);
     uint8_t address[TOX_FRIEND_ADDRESS_SIZE];
     tox_get_address(tox2, address);
     int test = tox_add_friend(tox3, address, (uint8_t *)"Gentoo", 7);
@@ -129,6 +165,7 @@ START_TEST(test_few_clients)
 
         if (tox_isconnected(tox1) && tox_isconnected(tox2) && tox_isconnected(tox3) && off) {
             printf("Toxes are online, took %llu seconds\n", time(NULL) - cur_time);
+            con_time = time(NULL);
             off = 0;
         }
 
@@ -139,10 +176,14 @@ START_TEST(test_few_clients)
         c_sleep(50);
     }
 
-    printf("tox clients connected\n");
-    uint32_t to_compare = 974536;
+    printf("tox clients connected took %llu seconds\n", time(NULL) - con_time);
+    to_compare = 974536;
     tox_callback_friend_message(tox3, print_message, &to_compare);
-    tox_send_message(tox2, 0, (uint8_t *)"Install Gentoo", sizeof("Install Gentoo"));
+    uint8_t msgs[TOX_MAX_MESSAGE_LENGTH + 1];
+    memset(msgs, 'G', sizeof(msgs));
+    ck_assert_msg(tox_send_message(tox2, 0, msgs, TOX_MAX_MESSAGE_LENGTH + 1) == 0,
+                  "TOX_MAX_MESSAGE_LENGTH is too small\n");
+    ck_assert_msg(tox_send_message(tox2, 0, msgs, TOX_MAX_MESSAGE_LENGTH) != 0, "TOX_MAX_MESSAGE_LENGTH is too big\n");
 
     while (1) {
         messages_received = 0;
@@ -214,6 +255,53 @@ START_TEST(test_few_clients)
 
     ck_assert_msg(tox_get_is_typing(tox2, 0) == 0, "Typing fail");
 
+    uint32_t packet_number = 160;
+    int ret = tox_lossless_packet_registerhandler(tox3, 0, packet_number, handle_custom_packet, &packet_number);
+    ck_assert_msg(ret == 0, "tox_lossless_packet_registerhandler fail %i", ret);
+    uint8_t data_c[TOX_MAX_CUSTOM_PACKET_SIZE + 1];
+    memset(data_c, ((uint8_t)packet_number), sizeof(data_c));
+    ret = tox_send_lossless_packet(tox2, 0, data_c, sizeof(data_c));
+    ck_assert_msg(ret == -1, "tox_send_lossless_packet bigger fail %i", ret);
+    ret = tox_send_lossless_packet(tox2, 0, data_c, TOX_MAX_CUSTOM_PACKET_SIZE);
+    ck_assert_msg(ret == 0, "tox_send_lossless_packet fail %i", ret);
+
+    while (1) {
+        custom_packet = 0;
+        tox_do(tox1);
+        tox_do(tox2);
+        tox_do(tox3);
+
+        if (custom_packet == 1)
+            break;
+        else
+            ck_assert_msg(custom_packet == 0, "Lossless packet fail");
+
+        c_sleep(50);
+    }
+
+    packet_number = 200;
+    ret = tox_lossy_packet_registerhandler(tox3, 0, packet_number, handle_custom_packet, &packet_number);
+    ck_assert_msg(ret == 0, "tox_lossy_packet_registerhandler fail %i", ret);
+    memset(data_c, ((uint8_t)packet_number), sizeof(data_c));
+    ret = tox_send_lossy_packet(tox2, 0, data_c, sizeof(data_c));
+    ck_assert_msg(ret == -1, "tox_send_lossy_packet bigger fail %i", ret);
+    ret = tox_send_lossy_packet(tox2, 0, data_c, TOX_MAX_CUSTOM_PACKET_SIZE);
+    ck_assert_msg(ret == 0, "tox_send_lossy_packet fail %i", ret);
+
+    while (1) {
+        custom_packet = 0;
+        tox_do(tox1);
+        tox_do(tox2);
+        tox_do(tox3);
+
+        if (custom_packet == 1)
+            break;
+        else
+            ck_assert_msg(custom_packet == 0, "lossy packet fail");
+
+        c_sleep(50);
+    }
+
     filenum = file_accepted = file_size = file_sent = sendf_ok = size_recv = 0;
     long long unsigned int f_time = time(NULL);
     tox_callback_file_data(tox3, write_file, &to_compare);
@@ -224,8 +312,9 @@ START_TEST(test_few_clients)
     int fnum = tox_new_file_sender(tox2, 0, totalf_size, (uint8_t *)"Gentoo.exe", sizeof("Gentoo.exe"));
     ck_assert_msg(fnum != -1, "tox_new_file_sender fail");
     int fpiece_size = tox_file_data_size(tox2, 0);
-    uint8_t *f_data = malloc(fpiece_size);
-    memset(f_data, 6, fpiece_size);
+    uint8_t f_data[fpiece_size];
+    uint8_t num = 0;
+    memset(f_data, num, fpiece_size);
 
     while (1) {
         file_sent = 0;
@@ -240,34 +329,50 @@ START_TEST(test_few_clients)
                     tox_file_send_control(tox2, 0, 0, fnum, TOX_FILECONTROL_FINISHED, NULL, 0);
                 }
 
+                ++num;
+                memset(f_data, num, fpiece_size);
+
                 totalf_size -= fpiece_size;
             }
 
         if (file_sent && size_recv == file_size)
             break;
 
-        c_sleep(10);
+        uint32_t tox1_interval = tox_do_interval(tox1);
+        uint32_t tox2_interval = tox_do_interval(tox2);
+        uint32_t tox3_interval = tox_do_interval(tox3);
+
+        if (tox2_interval > tox3_interval) {
+            c_sleep(tox3_interval);
+        } else {
+            c_sleep(tox2_interval);
+        }
     }
 
     printf("100MB file sent in %llu seconds\n", time(NULL) - f_time);
 
     printf("test_few_clients succeeded, took %llu seconds\n", time(NULL) - cur_time);
+
+    tox_kill(tox1);
+    tox_kill(tox2);
+    tox_kill(tox3);
 }
 END_TEST
 
 #define NUM_TOXES 66
-#define NUM_FRIENDS 20
+#define NUM_FRIENDS 50
 
 START_TEST(test_many_clients)
 {
     long long unsigned int cur_time = time(NULL);
     Tox *toxes[NUM_TOXES];
     uint32_t i, j;
+    uint32_t to_comp = 974536;
 
     for (i = 0; i < NUM_TOXES; ++i) {
-        toxes[i] = tox_new(TOX_ENABLE_IPV6_DEFAULT);
+        toxes[i] = tox_new(0);
         ck_assert_msg(toxes[i] != 0, "Failed to create tox instances %u", i);
-        tox_callback_friend_request(toxes[i], accept_friend_request, toxes[i]);
+        tox_callback_friend_request(toxes[i], accept_friend_request, &to_comp);
     }
 
     struct {
@@ -281,6 +386,12 @@ START_TEST(test_many_clients)
 loop_top:
         pairs[i].tox1 = rand() % NUM_TOXES;
         pairs[i].tox2 = (pairs[i].tox1 + rand() % (NUM_TOXES - 1) + 1) % NUM_TOXES;
+
+        for (j = 0; j < i; ++j) {
+            if (pairs[j].tox2 == pairs[i].tox1 && pairs[j].tox1 == pairs[i].tox2)
+                goto loop_top;
+        }
+
         tox_get_address(toxes[pairs[i].tox1], address);
         int test = tox_add_friend(toxes[pairs[i].tox2], address, (uint8_t *)"Gentoo", 7);
 
@@ -312,23 +423,19 @@ loop_top:
     }
 
     printf("test_many_clients succeeded, took %llu seconds\n", time(NULL) - cur_time);
+
+    for (i = 0; i < NUM_TOXES; ++i) {
+        tox_kill(toxes[i]);
+    }
 }
 END_TEST
 
-#define DEFTESTCASE(NAME) \
-    TCase *tc_##NAME = tcase_create(#NAME); \
-    tcase_add_test(tc_##NAME, test_##NAME); \
-    suite_add_tcase(s, tc_##NAME);
-
-#define DEFTESTCASE_SLOW(NAME, TIMEOUT) \
-    DEFTESTCASE(NAME) \
-    tcase_set_timeout(tc_##NAME, TIMEOUT);
 Suite *tox_suite(void)
 {
     Suite *s = suite_create("Tox");
 
     DEFTESTCASE_SLOW(few_clients, 50);
-    DEFTESTCASE_SLOW(many_clients, 300);
+    DEFTESTCASE_SLOW(many_clients, 150);
     return s;
 }
 

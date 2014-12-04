@@ -17,8 +17,6 @@
  *   You should have received a copy of the GNU General Public License
  *   along with Tox. If not, see <http://www.gnu.org/licenses/>.
  *
- *
- *   Report bugs/suggestions at #tox-dev @ freenode.net:6667
  */
 
 
@@ -26,11 +24,18 @@
 #define __TOXAV
 #include <inttypes.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct _ToxAv ToxAv;
+
 /* vpx_image_t */
 #include <vpx/vpx_image.h>
 
-typedef void *( *ToxAVCallback ) ( void *arg );
-typedef struct _ToxAv ToxAv;
+typedef void ( *ToxAVCallback ) ( void *agent, int32_t call_idx, void *arg );
+typedef void ( *ToxAvAudioCallback ) (void *agent, int32_t call_idx, const int16_t *PCM, uint16_t size, void *data);
+typedef void ( *ToxAvVideoCallback ) (void *agent, int32_t call_idx, const vpx_image_t *img, void *data);
 
 #ifndef __TOX_DEFINED__
 #define __TOX_DEFINED__
@@ -39,254 +44,286 @@ typedef struct Tox Tox;
 
 #define RTP_PAYLOAD_SIZE 65535
 
-/* Number of audio channels. */
-#define AUDIO_CHANNELS 1
-
-/* Audio frame duration in miliseconds */
-#define AUDIO_FRAME_DURATION    20
-
-/* Audio sample rate recommended to be 48kHz for Opus */
-#define AUDIO_SAMPLE_RATE   48000
-
-/* The amount of samples in one audio frame */
-#define AUDIO_FRAME_SIZE    (AUDIO_SAMPLE_RATE*AUDIO_FRAME_DURATION/1000)
-
 
 /**
- * @brief Callbacks ids that handle the call states.
+ * Callbacks ids that handle the call states.
  */
 typedef enum {
-    /* Requests */
-    OnInvite,
-    OnStart,
-    OnCancel,
-    OnReject,
-    OnEnd,
-
-    /* Responses */
-    OnRinging,
-    OnStarting,
-    OnEnding,
-
-    /* Protocol */
-    OnError,
-    OnRequestTimeout
-
+    av_OnInvite, /* Incoming call */
+    av_OnRinging, /* When peer is ready to accept/reject the call */
+    av_OnStart, /* Call (RTP transmission) started */
+    av_OnCancel, /* The side that initiated call canceled invite */
+    av_OnReject, /* The side that was invited rejected the call */
+    av_OnEnd, /* Call that was active ended */
+    av_OnRequestTimeout, /* When the requested action didn't get response in specified time */
+    av_OnPeerTimeout, /* Peer timed out; stop the call */
+    av_OnPeerCSChange, /* Peer changing Csettings. Prepare for changed AV */
+    av_OnSelfCSChange /* Csettings change confirmation. Once triggered peer is ready to recv changed AV */
 } ToxAvCallbackID;
 
 
 /**
- * @brief Call type identifier.
+ * Call type identifier.
  */
 typedef enum {
-    TypeAudio = 70,
-    TypeVideo
+    av_TypeAudio = 192,
+    av_TypeVideo
 } ToxAvCallType;
 
 
+typedef enum {
+    av_CallNonExistent = -1,
+    av_CallInviting, /* when sending call invite */
+    av_CallStarting, /* when getting call invite */
+    av_CallActive,
+    av_CallHold,
+    av_CallHungUp
+} ToxAvCallState;
+
 /**
- * @brief Error indicators.
- *
+ * Error indicators. Values under -20 are reserved for toxcore.
  */
 typedef enum {
-    ErrorNone = 0,
-    ErrorInternal = -1, /* Internal error */
-    ErrorAlreadyInCall = -2, /* Already has an active call */
-    ErrorNoCall = -3, /* Trying to perform call action while not in a call */
-    ErrorInvalidState = -4, /* Trying to perform call action while in invalid state*/
-    ErrorNoRtpSession = -5, /* Trying to perform rtp action on invalid session */
-    ErrorAudioPacketLost = -6, /* Indicating packet loss */
-    ErrorStartingAudioRtp = -7, /* Error in toxav_prepare_transmission() */
-    ErrorStartingVideoRtp = -8 , /* Error in toxav_prepare_transmission() */
-    ErrorNoTransmission = -9, /* Returned in toxav_kill_transmission() */
-    ErrorTerminatingAudioRtp = -10, /* Returned in toxav_kill_transmission() */
-    ErrorTerminatingVideoRtp = -11, /* Returned in toxav_kill_transmission() */
-
+    av_ErrorNone = 0,
+    av_ErrorUnknown = -1, /* Unknown error */
+    av_ErrorNoCall = -20, /* Trying to perform call action while not in a call */
+    av_ErrorInvalidState = -21, /* Trying to perform call action while in invalid state*/
+    av_ErrorAlreadyInCallWithPeer = -22, /* Trying to call peer when already in a call with peer */
+    av_ErrorReachedCallLimit = -23, /* Cannot handle more calls */
+    av_ErrorInitializingCodecs = -30, /* Failed creating CSSession */
+    av_ErrorSettingVideoResolution = -31, /* Error setting resolution */
+    av_ErrorSettingVideoBitrate = -32, /* Error setting bitrate */
+    av_ErrorSplittingVideoPayload = -33, /* Error splitting video payload */
+    av_ErrorEncodingVideo = -34, /* vpx_codec_encode failed */
+    av_ErrorEncodingAudio = -35, /* opus_encode failed */
+    av_ErrorSendingPayload = -40, /* Sending lossy packet failed */
+    av_ErrorCreatingRtpSessions = -41, /* One of the rtp sessions failed to initialize */
+    av_ErrorNoRtpSession = -50, /* Trying to perform rtp action on invalid session */
+    av_ErrorInvalidCodecState = -51, /* Codec state not initialized */
+    av_ErrorPacketTooLarge = -52, /* Split packet exceeds it's limit */
 } ToxAvError;
 
 
 /**
- * @brief Start new A/V session. There can only be one session at the time. If you register more
- *        it will result in undefined behaviour.
- *
- * @param messenger The messenger handle.
- * @param userdata The agent handling A/V session (i.e. phone).
- * @param video_width Width of video frame.
- * @param video_height Height of video frame.
- * @return ToxAv*
- * @retval NULL On error.
+ * Locally supported capabilities.
  */
-ToxAv *toxav_new(Tox *messenger, void *userdata, uint16_t video_width, uint16_t video_height);
+typedef enum {
+    av_AudioEncoding = 1 << 0,
+    av_AudioDecoding = 1 << 1,
+    av_VideoEncoding = 1 << 2,
+    av_VideoDecoding = 1 << 3
+} ToxAvCapabilities;
+
 
 /**
- * @brief Remove A/V session.
- *
- * @param av Handler.
- * @return void
+ * Encoding settings.
+ */
+typedef struct _ToxAvCSettings {
+    ToxAvCallType call_type;
+
+    uint32_t video_bitrate; /* In kbits/s */
+    uint16_t max_video_width; /* In px */
+    uint16_t max_video_height; /* In px */
+
+    uint32_t audio_bitrate; /* In bits/s */
+    uint16_t audio_frame_duration; /* In ms */
+    uint32_t audio_sample_rate; /* In Hz */
+    uint32_t audio_channels;
+} ToxAvCSettings;
+
+extern const ToxAvCSettings av_DefaultSettings;
+
+/**
+ * Start new A/V session. There can only be one session at the time.
+ */
+ToxAv *toxav_new(Tox *messenger, int32_t max_calls);
+
+/**
+ * Remove A/V session.
  */
 void toxav_kill(ToxAv *av);
 
 /**
- * @brief Register callback for call state.
- *
- * @param callback The callback
- * @param id One of the ToxAvCallbackID values
- * @return void
+ * Returns the interval in milliseconds when the next toxav_do() should be called.
+ * If no call is active at the moment returns 200.
  */
-void toxav_register_callstate_callback (ToxAVCallback callback, ToxAvCallbackID id);
+uint32_t toxav_do_interval(ToxAv *av);
 
 /**
- * @brief Call user. Use its friend_id.
- *
- * @param av Handler.
- * @param user The user.
- * @param call_type Call type.
- * @param ringing_seconds Ringing timeout.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Main loop for the session. Best called right after tox_do();
  */
-int toxav_call(ToxAv *av, int user, ToxAvCallType call_type, int ringing_seconds);
+void toxav_do(ToxAv *av);
 
 /**
- * @brief Hangup active call.
- *
- * @param av Handler.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Register callback for call state.
  */
-int toxav_hangup(ToxAv *av);
+void toxav_register_callstate_callback (ToxAv *av, ToxAVCallback cb, ToxAvCallbackID id, void *userdata);
 
 /**
- * @brief Answer incomming call.
- *
- * @param av Handler.
- * @param call_type Answer with...
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Register callback for audio data.
  */
-int toxav_answer(ToxAv *av, ToxAvCallType call_type );
+void toxav_register_audio_callback (ToxAv *av, ToxAvAudioCallback cb, void *userdata);
 
 /**
- * @brief Reject incomming call.
- *
- * @param av Handler.
- * @param reason Optional reason. Set NULL if none.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Register callback for video data.
  */
-int toxav_reject(ToxAv *av, const char *reason);
+void toxav_register_video_callback (ToxAv *av, ToxAvVideoCallback cb, void *userdata);
 
 /**
- * @brief Cancel outgoing request.
- *
- * @param av Handler.
- * @param reason Optional reason.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Call user. Use its friend_id.
  */
-int toxav_cancel(ToxAv *av, const char *reason);
+int toxav_call(ToxAv *av,
+               int32_t *call_index,
+               int friend_id,
+               const ToxAvCSettings *csettings,
+               int ringing_seconds);
 
 /**
- * @brief Terminate transmission. Note that transmission will be terminated without informing remote peer.
- *
- * @param av Handler.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Hangup active call.
  */
-int toxav_stop_call(ToxAv *av);
+int toxav_hangup(ToxAv *av, int32_t call_index);
 
 /**
- * @brief Must be call before any RTP transmission occurs.
- *
- * @param av Handler.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Answer incoming call. Pass the csettings that you will use.
  */
-int toxav_prepare_transmission(ToxAv *av);
+int toxav_answer(ToxAv *av, int32_t call_index, const ToxAvCSettings *csettings );
 
 /**
- * @brief Call this at the end of the transmission.
- *
- * @param av Handler.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Reject incoming call.
  */
-int toxav_kill_transmission(ToxAv *av);
+int toxav_reject(ToxAv *av, int32_t call_index, const char *reason);
 
 /**
- * @brief Receive decoded video packet.
- *
- * @param av Handler.
- * @param output Storage.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On Error.
+ * Cancel outgoing request.
  */
-int toxav_recv_video ( ToxAv *av, vpx_image_t **output);
+int toxav_cancel(ToxAv *av, int32_t call_index, int peer_id, const char *reason);
 
 /**
- * @brief Receive decoded audio frame.
- *
- * @param av Handler.
- * @param frame_size The size of dest in frames/samples (one frame/sample is 16 bits or 2 bytes
- *                   and corresponds to one sample of audio.)
- * @param dest Destination of the raw audio (16 bit signed pcm with AUDIO_CHANNELS channels).
- *             Make sure it has enough space for frame_size frames/samples.
- * @return int
- * @retval >=0 Size of received data in frames/samples.
- * @retval ToxAvError On error.
+ * Notify peer that we are changing codec settings.
  */
-int toxav_recv_audio( ToxAv *av, int frame_size, int16_t *dest );
+int toxav_change_settings(ToxAv *av, int32_t call_index, const ToxAvCSettings *csettings);
 
 /**
- * @brief Encode and send video packet.
- *
- * @param av Handler.
- * @param input The packet.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Terminate transmission. Note that transmission will be
+ * terminated without informing remote peer. Usually called when we can't inform peer.
  */
-int toxav_send_video ( ToxAv *av, vpx_image_t *input);
+int toxav_stop_call(ToxAv *av, int32_t call_index);
 
 /**
- * @brief Encode and send audio frame.
- *
- * @param av Handler.
- * @param frame The frame (raw 16 bit signed pcm with AUDIO_CHANNELS channels audio.)
- * @param frame_size Its size in number of frames/samples (one frame/sample is 16 bits or 2 bytes)
- *                   frame size should be AUDIO_FRAME_SIZE.
- * @return int
- * @retval 0 Success.
- * @retval ToxAvError On error.
+ * Allocates transmission data. Must be call before calling toxav_prepare_* and toxav_send_*.
+ * Also, it must be called when call is started
  */
-int toxav_send_audio ( ToxAv *av, const int16_t *frame, int frame_size);
+int toxav_prepare_transmission(ToxAv *av, int32_t call_index, int support_video);
 
 /**
- * @brief Get peer transmission type. It can either be audio or video.
- *
- * @param av Handler.
- * @param peer The peer
- * @return int
- * @retval ToxAvCallType On success.
- * @retval ToxAvError On error.
+ * Clears transmission data. Call this at the end of the transmission.
  */
-int toxav_get_peer_transmission_type ( ToxAv *av, int peer );
+int toxav_kill_transmission(ToxAv *av, int32_t call_index);
 
 /**
- * @brief Get reference to an object that is handling av session.
- *
- * @param av Handler.
- * @return void*
+ * Encode video frame.
  */
-void *toxav_get_agent_handler ( ToxAv *av );
+int toxav_prepare_video_frame ( ToxAv *av,
+                                int32_t call_index,
+                                uint8_t *dest,
+                                int dest_max,
+                                vpx_image_t *input);
+
+/**
+ * Send encoded video packet.
+ */
+int toxav_send_video ( ToxAv *av, int32_t call_index, const uint8_t *frame, uint32_t frame_size);
+
+/**
+ * Encode audio frame.
+ */
+int toxav_prepare_audio_frame ( ToxAv *av,
+                                int32_t call_index,
+                                uint8_t *dest,
+                                int dest_max,
+                                const int16_t *frame,
+                                int frame_size);
+
+/**
+ * Send encoded audio frame.
+ */
+int toxav_send_audio ( ToxAv *av, int32_t call_index, const uint8_t *frame, unsigned int size);
+
+/**
+ * Get codec settings from the peer. These were exchanged during call initialization
+ * or when peer send us new csettings.
+ */
+int toxav_get_peer_csettings ( ToxAv *av, int32_t call_index, int peer, ToxAvCSettings *dest );
+
+/**
+ * Get friend id of peer participating in conversation.
+ */
+int toxav_get_peer_id ( ToxAv *av, int32_t call_index, int peer );
+
+/**
+ * Get current call state.
+ */
+ToxAvCallState toxav_get_call_state ( ToxAv *av, int32_t call_index );
+
+/**
+ * Is certain capability supported. Used to determine if encoding/decoding is ready.
+ */
+int toxav_capability_supported ( ToxAv *av, int32_t call_index, ToxAvCapabilities capability );
+
+/**
+ * Returns tox reference.
+ */
+Tox *toxav_get_tox (ToxAv *av);
+
+/**
+ * Returns number of active calls or -1 on error.
+ */
+int toxav_get_active_count (ToxAv *av);
+
+/* Create a new toxav group.
+ *
+ * return group number on success.
+ * return -1 on failure.
+ *
+ * Audio data callback format:
+ *   audio_callback(Tox *tox, int groupnumber, int peernumber, const int16_t *pcm, unsigned int samples, uint8_t channels, unsigned int sample_rate, void *userdata)
+ *
+ * Note that total size of pcm in bytes is equal to (samples * channels * sizeof(int16_t)).
+ */
+int toxav_add_av_groupchat(Tox *tox, void (*audio_callback)(Tox *, int, int, const int16_t *, unsigned int, uint8_t,
+                           unsigned int, void *), void *userdata);
+
+/* Join a AV group (you need to have been invited first.)
+ *
+ * returns group number on success
+ * returns -1 on failure.
+ *
+ * Audio data callback format (same as the one for toxav_add_av_groupchat()):
+ *   audio_callback(Tox *tox, int groupnumber, int peernumber, const int16_t *pcm, unsigned int samples, uint8_t channels, unsigned int sample_rate, void *userdata)
+ *
+ * Note that total size of pcm in bytes is equal to (samples * channels * sizeof(int16_t)).
+ */
+int toxav_join_av_groupchat(Tox *tox, int32_t friendnumber, const uint8_t *data, uint16_t length,
+                            void (*audio_callback)(Tox *, int, int, const int16_t *, unsigned int, uint8_t, unsigned int, void *), void *userdata);
+
+/* Send audio to the group chat.
+ *
+ * return 0 on success.
+ * return -1 on failure.
+ *
+ * Note that total size of pcm in bytes is equal to (samples * channels * sizeof(int16_t)).
+ *
+ * Valid number of samples are ((sample rate) * (audio length (Valid ones are: 2.5, 5, 10, 20, 40 or 60 ms)) / 1000)
+ * Valid number of channels are 1 or 2.
+ * Valid sample rates are 8000, 12000, 16000, 24000, or 48000.
+ *
+ * Recommended values are: samples = 960, channels = 1, sample_rate = 48000
+ */
+int toxav_group_send_audio(Tox *tox, int groupnumber, const int16_t *pcm, unsigned int samples, uint8_t channels,
+                           unsigned int sample_rate);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __TOXAV */

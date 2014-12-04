@@ -28,18 +28,30 @@
 typedef struct {
     DHT     *dht;
     Networking_Core *net;
-    uint8_t secret_symmetric_key[crypto_secretbox_KEYBYTES];
+    uint8_t secret_symmetric_key[crypto_box_KEYBYTES];
     uint64_t timestamp;
+
+    Shared_Keys shared_keys_1;
+    Shared_Keys shared_keys_2;
+    Shared_Keys shared_keys_3;
+
+    int (*recv_1_function)(void *, IP_Port, const uint8_t *, uint16_t);
+    void *callback_object;
 } Onion;
 
-#define ONION_RETURN_1 (crypto_secretbox_NONCEBYTES + sizeof(IP_Port) + crypto_secretbox_MACBYTES)
-#define ONION_RETURN_2 (crypto_secretbox_NONCEBYTES + sizeof(IP_Port) + crypto_secretbox_MACBYTES + ONION_RETURN_1)
-#define ONION_RETURN_3 (crypto_secretbox_NONCEBYTES + sizeof(IP_Port) + crypto_secretbox_MACBYTES + ONION_RETURN_2)
+#define ONION_MAX_PACKET_SIZE 1400
 
-#define ONION_SEND_BASE (crypto_box_PUBLICKEYBYTES + sizeof(IP_Port) + crypto_box_MACBYTES)
+#define ONION_RETURN_1 (crypto_box_NONCEBYTES + SIZE_IPPORT + crypto_box_MACBYTES)
+#define ONION_RETURN_2 (crypto_box_NONCEBYTES + SIZE_IPPORT + crypto_box_MACBYTES + ONION_RETURN_1)
+#define ONION_RETURN_3 (crypto_box_NONCEBYTES + SIZE_IPPORT + crypto_box_MACBYTES + ONION_RETURN_2)
+
+#define ONION_SEND_BASE (crypto_box_PUBLICKEYBYTES + SIZE_IPPORT + crypto_box_MACBYTES)
 #define ONION_SEND_3 (crypto_box_NONCEBYTES + ONION_SEND_BASE + ONION_RETURN_2)
 #define ONION_SEND_2 (crypto_box_NONCEBYTES + ONION_SEND_BASE*2 + ONION_RETURN_1)
 #define ONION_SEND_1 (crypto_box_NONCEBYTES + ONION_SEND_BASE*3)
+
+#define ONION_MAX_DATA_SIZE (ONION_MAX_PACKET_SIZE - (ONION_SEND_1 + 1))
+#define ONION_RESPONSE_MAX_DATA_SIZE (ONION_MAX_PACKET_SIZE - (1 + ONION_RETURN_3))
 
 typedef struct {
     uint8_t shared_key1[crypto_box_BEFORENMBYTES];
@@ -53,6 +65,8 @@ typedef struct {
     IP_Port     ip_port1;
     IP_Port     ip_port2;
     IP_Port     ip_port3;
+
+    uint32_t path_num;
 } Onion_Path;
 
 /* Create a new onion path.
@@ -64,23 +78,69 @@ typedef struct {
  * return -1 on failure.
  * return 0 on success.
  */
-int create_onion_path(DHT *dht, Onion_Path *new_path, Node_format *nodes);
+int create_onion_path(const DHT *dht, Onion_Path *new_path, const Node_format *nodes);
+
+/* Create a onion packet.
+ *
+ * Use Onion_Path path to create packet for data of length to dest.
+ * Maximum length of data is ONION_MAX_DATA_SIZE.
+ * packet should be at least ONION_MAX_PACKET_SIZE big.
+ *
+ * return -1 on failure.
+ * return length of created packet on success.
+ */
+int create_onion_packet(uint8_t *packet, uint16_t max_packet_length, const Onion_Path *path, IP_Port dest,
+                        const uint8_t *data, uint16_t length);
+
+
+/* Create a onion packet to be sent over tcp.
+ *
+ * Use Onion_Path path to create packet for data of length to dest.
+ * Maximum length of data is ONION_MAX_DATA_SIZE.
+ * packet should be at least ONION_MAX_PACKET_SIZE big.
+ *
+ * return -1 on failure.
+ * return length of created packet on success.
+ */
+int create_onion_packet_tcp(uint8_t *packet, uint16_t max_packet_length, const Onion_Path *path, IP_Port dest,
+                            const uint8_t *data, uint16_t length);
 
 /* Create and send a onion packet.
  *
  * Use Onion_Path path to send data of length to dest.
+ * Maximum length of data is ONION_MAX_DATA_SIZE.
  *
  * return -1 on failure.
  * return 0 on success.
  */
-int send_onion_packet(Networking_Core *net, Onion_Path *path, IP_Port dest, uint8_t *data, uint32_t length);
+int send_onion_packet(Networking_Core *net, const Onion_Path *path, IP_Port dest, const uint8_t *data, uint16_t length);
 
 /* Create and send a onion response sent initially to dest with.
+ * Maximum length of data is ONION_RESPONSE_MAX_DATA_SIZE.
  *
  * return -1 on failure.
  * return 0 on success.
  */
-int send_onion_response(Networking_Core *net, IP_Port dest, uint8_t *data, uint32_t length, uint8_t *ret);
+int send_onion_response(Networking_Core *net, IP_Port dest, const uint8_t *data, uint16_t length, const uint8_t *ret);
+
+/* Function to handle/send received decrypted versions of the packet sent with send_onion_packet.
+ *
+ * return 0 on success.
+ * return 1 on failure.
+ *
+ * Used to handle these packets that are received in a non traditional way (by TCP for example).
+ *
+ * Source family must be set to something else than AF_INET6 or AF_INET so that the callback gets called
+ * when the response is received.
+ */
+int onion_send_1(const Onion *onion, const uint8_t *plain, uint16_t len, IP_Port source, const uint8_t *nonce);
+
+/* Set the callback to be called when the dest ip_port doesn't have AF_INET6 or AF_INET as the family.
+ *
+ * Format: function(void *object, IP_Port dest, uint8_t *data, uint16_t length)
+ */
+void set_callback_handle_recv_1(Onion *onion, int (*function)(void *, IP_Port, const uint8_t *, uint16_t),
+                                void *object);
 
 Onion *new_onion(DHT *dht);
 

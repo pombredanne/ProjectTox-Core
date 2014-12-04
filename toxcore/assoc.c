@@ -3,6 +3,7 @@
 #include "config.h"
 #endif
 
+#include "logger.h"
 #include "DHT.h"
 #include "assoc.h"
 #include "ping.h"
@@ -28,7 +29,7 @@
  * Candidates are kept in buckets of hash tables. The hash
  * function is calculated from the client_id. Up to
  * HASH_COLLIDE_COUNT alternative positions are tried if
- * the inital position is already used by a different entry.
+ * the initial position is already used by a different entry.
  * The collision function is multiplicative, not additive.
  *
  * A new candidate can bump an existing candidate, if it is
@@ -102,7 +103,7 @@ struct Assoc {
 
 /* the complete distance would be CLIENT_ID_SIZE long...
  * returns DISTANCE_INDEX_DISTANCE_BITS valid bits */
-static uint64_t id_distance(Assoc *assoc, void *callback_data, uint8_t *id_ref, uint8_t *id_test)
+static uint64_t id_distance(const Assoc *assoc, void *callback_data, const uint8_t *id_ref, const uint8_t *id_test)
 {
     /* with BIG_ENDIAN, this would be a one-liner... */
     uint64_t retval = 0;
@@ -195,7 +196,7 @@ static void dist_index_bubble(Assoc *assoc, uint64_t *dist_list, size_t first, s
  *
  * Result is NOT MAPPED to CANDIDATES_TO_KEEP range, i.e. map before using
  * it for list access. */
-static hash_t id_hash(Assoc *assoc, uint8_t *id)
+static hash_t id_hash(const Assoc *assoc, const uint8_t *id)
 {
     uint32_t i, res = 0x19a64e82;
 
@@ -212,7 +213,7 @@ static hash_t id_hash(Assoc *assoc, uint8_t *id)
 
 /* up to HASH_COLLIDE_COUNT calls to different spots,
  * result IS mapped to CANDIDATES_TO_KEEP range */
-static hash_t hash_collide(Assoc *assoc, hash_t hash)
+static hash_t hash_collide(const Assoc *assoc, hash_t hash)
 {
     uint64_t hash64 = hash % assoc->candidates_bucket_size;
     hash64 = (hash64 * HASH_COLLIDE_PRIME) % assoc->candidates_bucket_size;
@@ -240,7 +241,7 @@ static hash_t hash_collide(Assoc *assoc, hash_t hash)
 }
 
 /* returns the "seen" assoc related to the ipp */
-static IPPTsPng *entry_assoc(Client_entry *cl_entry, IP_Port *ipp)
+static IPPTsPng *entry_assoc(Client_entry *cl_entry, const IP_Port *ipp)
 {
     if (!cl_entry)
         return NULL;
@@ -255,7 +256,7 @@ static IPPTsPng *entry_assoc(Client_entry *cl_entry, IP_Port *ipp)
 }
 
 /* returns the "heard" assoc related to the ipp */
-static IP_Port *entry_heard_get(Client_entry *entry, IP_Port *ipp)
+static IP_Port *entry_heard_get(Client_entry *entry, const IP_Port *ipp)
 {
     if (ipp->ip.family == AF_INET)
         return &entry->assoc_heard4;
@@ -270,7 +271,7 @@ static IP_Port *entry_heard_get(Client_entry *entry, IP_Port *ipp)
  * LAN ip
  *
  * returns 1 if the entry did change */
-static int entry_heard_store(Client_entry *entry, IPPTs *ippts)
+static int entry_heard_store(Client_entry *entry, const IPPTs *ippts)
 {
     if (!entry || !ippts)
         return 0;
@@ -278,7 +279,8 @@ static int entry_heard_store(Client_entry *entry, IPPTs *ippts)
     if (!ipport_isset(&ippts->ip_port))
         return 0;
 
-    IP_Port  *heard, *ipp = &ippts->ip_port;
+    IP_Port  *heard;
+    const IP_Port  *ipp = &ippts->ip_port;
 
     if (ipp->ip.family == AF_INET)
         heard = &entry->assoc_heard4;
@@ -313,13 +315,13 @@ static int entry_heard_store(Client_entry *entry, IPPTs *ippts)
 }
 
 /* maps Assoc callback signature to id_closest() */
-static int assoc_id_closest(Assoc *assoc, void *callback_data, uint8_t *client_id, uint8_t *client_id1,
-                            uint8_t *client_id2)
+static int assoc_id_closest(const Assoc *assoc, void *callback_data, const uint8_t *client_id,
+                            const uint8_t *client_id1, const uint8_t *client_id2)
 {
     return id_closest(client_id, client_id1, client_id2);
 }
 
-static bucket_t id_bucket(uint8_t *id, uint8_t bits)
+static bucket_t id_bucket(const uint8_t *id, uint8_t bits)
 {
     /* return the first "bits" bits of id */
     bucket_t retval = 0;
@@ -339,12 +341,12 @@ static bucket_t id_bucket(uint8_t *id, uint8_t bits)
 /*****************************************************************************/
 
 
-static bucket_t candidates_id_bucket(Assoc *assoc, uint8_t *id)
+static bucket_t candidates_id_bucket(const Assoc *assoc, const uint8_t *id)
 {
     return id_bucket(id, assoc->candidates_bucket_bits);
 }
 
-static uint8_t candidates_search(Assoc *assoc, uint8_t *id, hash_t hash, Client_entry **entryptr)
+static uint8_t candidates_search(const Assoc *assoc, const uint8_t *id, hash_t hash, Client_entry **entryptr)
 {
     bucket_t bucket = candidates_id_bucket(assoc, id);
     candidates_bucket *cnd_bckt = &assoc->candidates[bucket];
@@ -364,8 +366,8 @@ static uint8_t candidates_search(Assoc *assoc, uint8_t *id, hash_t hash, Client_
     return 0;
 }
 
-static void candidates_update_assoc(Assoc *assoc, Client_entry *entry, uint8_t used, IPPTs *ippts_send,
-                                    IP_Port *ipp_recv)
+static void candidates_update_assoc(const Assoc *assoc, Client_entry *entry, uint8_t used, const IPPTs *ippts_send,
+                                    const IP_Port *ipp_recv)
 {
     if (!assoc || !entry || !ippts_send)
         return;
@@ -396,7 +398,7 @@ static void candidates_update_assoc(Assoc *assoc, Client_entry *entry, uint8_t u
     entry_heard_store(entry, ippts_send);
 }
 
-static uint8_t candidates_create_internal(Assoc *assoc, hash_t hash, uint8_t *id, uint8_t seen,
+static uint8_t candidates_create_internal(const Assoc *assoc, hash_t const hash, const uint8_t *id, uint8_t seen,
         uint8_t used, bucket_t *bucketptr, size_t *posptr)
 {
     if (!assoc || !id || !bucketptr ||  !posptr)
@@ -428,8 +430,7 @@ static uint8_t candidates_create_internal(Assoc *assoc, hash_t hash, uint8_t *id
         // enumerated lists are superior to magic numbers
         if (!is_timeout(entry->used_at, BAD_NODE_TIMEOUT))
             check = USED;
-
-        if (!is_timeout(entry->seen_at, CANDIDATES_SEEN_TIMEOUT))
+        else if (!is_timeout(entry->seen_at, CANDIDATES_SEEN_TIMEOUT))
             check = SEENG;
         else if (!is_timeout(entry->heard_at, CANDIDATES_HEARD_TIMEOUT))
             check = SEENB_HEARDG;
@@ -454,8 +455,8 @@ static uint8_t candidates_create_internal(Assoc *assoc, hash_t hash, uint8_t *id
     return 0;
 }
 
-static uint8_t candidates_create_new(Assoc *assoc, hash_t hash, uint8_t *id, uint8_t used,
-                                     IPPTs *ippts_send, IP_Port *ipp_recv)
+static uint8_t candidates_create_new(const Assoc *assoc, hash_t hash, const uint8_t *id, uint8_t used,
+                                     const IPPTs *ippts_send, const IP_Port *ipp_recv)
 {
     if (!assoc || !id || !ippts_send)
         return 0;
@@ -524,9 +525,7 @@ static void client_id_self_update(Assoc *assoc)
         assoc->self_hash = id_hash(assoc, assoc->self_client_id);
     }
 
-#ifdef LOGGING
-    loglog("assoc: id is now set, purging cache of self-references...\n");
-#endif
+    LOGGER_DEBUG("id is now set, purging cache of self-references");
 
     /* if we already added some (or loaded some) entries,
      * look and remove if we find a match
@@ -552,7 +551,7 @@ static void client_id_self_update(Assoc *assoc)
  * seen should be 0 (zero), if the candidate was announced by someone else,
  * seen should be 1 (one), if there is confirmed connectivity (a definite response)
  */
-uint8_t Assoc_add_entry(Assoc *assoc, uint8_t *id, IPPTs *ippts_send, IP_Port *ipp_recv, uint8_t used)
+uint8_t Assoc_add_entry(Assoc *assoc, const uint8_t *id, const IPPTs *ippts_send, const IP_Port *ipp_recv, uint8_t used)
 {
     if (!assoc || !id || !ippts_send)
         return 0;
@@ -779,7 +778,7 @@ static size_t prime_upto_min9(size_t limit)
 }
 
 /* create */
-Assoc *new_Assoc(size_t bits, size_t entries, uint8_t *public_id)
+Assoc *new_Assoc(size_t bits, size_t entries, const uint8_t *public_id)
 {
     if (!public_id)
         return NULL;
@@ -821,10 +820,8 @@ Assoc *new_Assoc(size_t bits, size_t entries, uint8_t *public_id)
             entries_test = prime_upto_min9(entries_test - 1);
 
         if (entries_test != entries) {
-#ifdef LOGGING
-            sprintf(logbuffer, "new_Assoc(): trimmed %i to %i.\n", (int)entries, (int)entries_test);
-            loglog(logbuffer);
-#endif
+
+            LOGGER_DEBUG("trimmed %i to %i.\n", (int)entries, (int)entries_test);
             entries = (size_t)entries_test;
         }
     }
@@ -834,7 +831,19 @@ Assoc *new_Assoc(size_t bits, size_t entries, uint8_t *public_id)
     /* allocation: preferably few blobs */
     size_t bckt, cix;
     Client_entry *clients = malloc(sizeof(*clients) * assoc->candidates_bucket_count * assoc->candidates_bucket_size);
+
+    if (!clients) {
+        free(assoc);
+        return NULL;
+    }
+
     candidates_bucket *lists = malloc(sizeof(*lists) * assoc->candidates_bucket_count);
+
+    if (!lists) {
+        free(assoc);
+        free(clients);
+        return NULL;
+    }
 
     for (bckt = 0; bckt < assoc->candidates_bucket_count; bckt++) {
         candidates_bucket *list = &lists[bckt];
@@ -854,7 +863,7 @@ Assoc *new_Assoc(size_t bits, size_t entries, uint8_t *public_id)
     return assoc;
 }
 
-Assoc *new_Assoc_default(uint8_t *public_id)
+Assoc *new_Assoc_default(const uint8_t *public_id)
 {
     /* original 8, 251 averages to ~32k entries... probably the whole DHT :D
      * 320 entries is fine, hopefully */
@@ -862,7 +871,7 @@ Assoc *new_Assoc_default(uint8_t *public_id)
 }
 
 /* own client_id, assocs for this have to be ignored */
-void Assoc_self_client_id_changed(Assoc *assoc, uint8_t *id)
+void Assoc_self_client_id_changed(Assoc *assoc, const uint8_t *id)
 {
     if (assoc && id) {
         assoc->self_hash = 0;
@@ -873,7 +882,7 @@ void Assoc_self_client_id_changed(Assoc *assoc, uint8_t *id)
 
 #ifdef LOGGING
 static char *idpart2str(uint8_t *id, size_t len);
-#endif
+#endif /* LOGGING */
 
 /* refresh buckets */
 void do_Assoc(Assoc *assoc, DHT *dht)
@@ -889,7 +898,7 @@ void do_Assoc(Assoc *assoc, DHT *dht)
          * send getnode() requests to both */
         uint8_t *target_id = NULL;
         Client_entry *heard = NULL, *seen = NULL;
-        size_t i, k, m, bckt;
+        size_t i, k, m;
 
         for (i = 1; i < assoc->candidates_bucket_count; i++) {
             if (i % 2)
@@ -897,7 +906,7 @@ void do_Assoc(Assoc *assoc, DHT *dht)
             else
                 k = i >> 1;
 
-            bckt = (candidate + k) % assoc->candidates_bucket_count;
+            size_t bckt = (candidate + k) % assoc->candidates_bucket_count;
 
             for (m = 0; m < assoc->candidates_bucket_size; m++)
                 if (assoc->candidates[bckt].list[m].hash) {
@@ -929,53 +938,31 @@ void do_Assoc(Assoc *assoc, DHT *dht)
                 break;
         }
 
-#ifdef LOGGING
-        size_t total = 0, written = sprintf(logbuffer, "assoc: [%u] => ",
-                                            (uint32_t)(candidate % assoc->candidates_bucket_count));
-
-        if (written > 0)
-            total += written;
-
-#endif
-
         if (seen) {
             IPPTsPng *ippts = seen->seen_family == AF_INET ? &seen->client.assoc4 : &seen->client.assoc6;
-#ifdef LOGGING
-            written = sprintf(logbuffer + total, " S[%s...] %s:%u", idpart2str(seen->client.client_id, 8),
-                              ip_ntoa(&ippts->ip_port.ip), htons(ippts->ip_port.port));
 
-            if (written > 0)
-                total += written;
+            LOGGER_DEBUG("[%u] => S[%s...] %s:%u", (uint32_t)(candidate % assoc->candidates_bucket_count),
+                         idpart2str(seen->client.client_id, 8), ip_ntoa(&ippts->ip_port.ip), htons(ippts->ip_port.port));
 
-#endif
             DHT_getnodes(dht, &ippts->ip_port, seen->client.client_id, target_id);
             seen->getnodes = unix_time();
         }
 
         if (heard && (heard != seen)) {
             IP_Port *ipp = heard->heard_family == AF_INET ? &heard->assoc_heard4 : &heard->assoc_heard6;
-#ifdef LOGGING
-            written = sprintf(logbuffer + total, " H[%s...] %s:%u", idpart2str(heard->client.client_id, 8), ip_ntoa(&ipp->ip),
-                              htons(ipp->port));
 
-            if (written > 0)
-                total += written;
+            LOGGER_DEBUG("[%u] => H[%s...] %s:%u", (uint32_t)(candidate % assoc->candidates_bucket_count),
+                         idpart2str(heard->client.client_id, 8), ip_ntoa(&ipp->ip), htons(ipp->port));
 
-#endif
             DHT_getnodes(dht, ipp, heard->client.client_id, target_id);
             heard->getnodes = unix_time();
         }
 
-#ifdef LOGGING
+        LOGGER_SCOPE (
 
-        if (!heard && !seen)
-            sprintf(logbuffer + total, "no nodes to talk to??\n");
-        else
-            /* for arcane reasons, sprintf(str, "\n") doesn't function */
-            sprintf(logbuffer + total, "%s", "\n");
-
-        loglog(logbuffer);
-#endif
+            if ( !heard && !seen )
+            LOGGER_DEBUG("[%u] => no nodes to talk to??", (uint32_t)(candidate % assoc->candidates_bucket_count));
+        );
     }
 }
 
@@ -1006,14 +993,14 @@ static char *idpart2str(uint8_t *id, size_t len)
     return buffer;
 }
 
-void Assoc_status(Assoc *assoc)
+void Assoc_status(const Assoc *assoc)
 {
     if (!assoc) {
-        loglog("Assoc status: no assoc\n");
+        LOGGER_INFO("Assoc status: no assoc");
         return;
     }
 
-    loglog("[b:p] hash => [id...] used, seen, heard\n");
+    LOGGER_INFO("[b:p] hash => [id...] used, seen, heard");
 
     size_t bid, cid, total = 0;
 
@@ -1024,24 +1011,23 @@ void Assoc_status(Assoc *assoc)
             Client_entry *entry = &bucket->list[cid];
 
             if (entry->hash) {
-                sprintf(logbuffer, "[%3i:%3i] %08x => [%s...] %i, %i(%c), %i(%c)\n",
-                        (int)bid, (int)cid, entry->hash, idpart2str(entry->client.client_id, 8),
-                        entry->used_at ? (int)(unix_time() - entry->used_at) : 0,
-                        entry->seen_at ? (int)(unix_time() - entry->seen_at) : 0,
-                        entry->seen_at ? (entry->seen_family == AF_INET ? '4' : (entry->seen_family == AF_INET6 ? '6' : '?')) : '?',
+                total++;
+
+                LOGGER_INFO("[%3i:%3i] %08x => [%s...] %i, %i(%c), %i(%c)\n",
+                            (int)bid, (int)cid, entry->hash, idpart2str(entry->client.client_id, 8),
+                            entry->used_at ? (int)(unix_time() - entry->used_at) : 0,
+                            entry->seen_at ? (int)(unix_time() - entry->seen_at) : 0,
+                            entry->seen_at ? (entry->seen_family == AF_INET ? '4' : (entry->seen_family == AF_INET6 ? '6' : '?')) : '?',
                             entry->heard_at ? (int)(unix_time() - entry->heard_at) : 0,
                             entry->heard_at ? (entry->heard_family == AF_INET ? '4' : (entry->heard_family == AF_INET6 ? '6' : '?')) : '?');
-                loglog(logbuffer);
-                total++;
             }
         }
     }
 
     if (total) {
-        sprintf(logbuffer, "Total: %i entries, table usage %i%%.\n", (int)total,
-                (int)(total * 100 / (assoc->candidates_bucket_count * assoc->candidates_bucket_size)));
-        loglog(logbuffer);
+        LOGGER_INFO("Total: %i entries, table usage %i%%.\n", (int)total,
+                    (int)(total * 100 / (assoc->candidates_bucket_count * assoc->candidates_bucket_size)));
     }
 }
 
-#endif
+#endif /* LOGGING */
